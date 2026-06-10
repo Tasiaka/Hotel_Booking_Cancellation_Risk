@@ -1,0 +1,7 @@
+check,count,share
+arrival_date is missing,0,0.0
+total_guests == 0,180,0.001507663958455482
+total_nights == 0,715,0.005988776279420387
+adr < 0,1,8.375910880308233e-06
+lead_time < 0,0,0.0
+booking_value < 0,1,8.375910880308233e-06

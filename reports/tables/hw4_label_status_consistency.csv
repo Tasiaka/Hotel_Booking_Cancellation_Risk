@@ -1,0 +1,4 @@
+reservation_status,is_canceled,count
+Canceled,1,43017
+Check-Out,0,75166
+No-Show,1,1207

@@ -1,14 +1,18 @@
-# Домашнее задание №4. Dataset для задачи прогнозирования риска отмен бронирований
+# Домашнее задание №4. Data Understanding и датасет для задачи прогнозирования риска отмен бронирований
 
 ## Проект
 
-**Hotel Booking Cancellation Risk** — ML-сервис для revenue-менеджера отеля. Сервис должен оценивать вероятность отмены бронирования, ранжировать заявки по `risk_score`, выделять high-risk бронирования и показывать ожидаемую выручку под риском. Продуктовая цепочка из предыдущих домашних заданий остается неизменной:
+**Hotel Booking Cancellation Risk** — ML-сервис для revenue-менеджера отеля. Сервис должен оценивать вероятность отмены бронирования, ранжировать заявки по `risk_score`, выделять high-risk бронирования и показывать ожидаемую выручку под риском.
+
+ДЗ №4 закрывает data-centric слой проекта: не обучает финальную модель, а формирует корректный датасет, показывает фактический EDA и фиксирует правила использования данных в моделировании.
+
+Критическая продуктовая цепочка:
 
 ```text
 данные бронирования → честный прогноз → приоритизация риска → управленческое действие → оценка денег
 ```
 
-ДЗ №4 это data-centric часть проекта: не обучение финальной модели, а подготовку корректного датасета и правил его использования в моделировании.
+В ответ на замечание проверяющего отчет теперь связан с исполняемым ноутбуком `notebooks/04_data_understanding_dataset.ipynb`: в нем есть код загрузки данных, таблицы, графики, leakage audit, подготовка итоговых CSV и стратегия валидации.
 
 ---
 
@@ -16,13 +20,7 @@
 
 ### 1.1. Основной датасет
 
-**Hotel Booking Demand Dataset**.
-
-Источник: Kaggle `jessemostipak/hotel-booking-demand`, также датасет опубликован как научный датасет *Hotel booking demand datasets*.
-
-Файл: `hotel_bookings.csv`.
-
-Состав:
+**Hotel Booking Demand Dataset**. Файл: `data/raw/hotel_bookings.csv`.
 
 | Параметр | Значение |
 |---|---:|
@@ -31,11 +29,11 @@
 | Тип объекта | одно бронирование |
 | Тип задачи | бинарная классификация |
 | Целевая переменная | `is_canceled` |
-| Положительный класс | `1` — бронирование отменено / не реализовалось |
+| Положительный класс | `1` — бронирование отменено / no-show |
 | Доля положительного класса | 37.04% |
 | Типы отелей | `City Hotel`, `Resort Hotel` |
 | Диапазон дат заезда | 2015-07-01 — 2017-08-31 |
-| Расчетный диапазон дат создания брони | 2014-03-18 — 2017-08-31 после очистки |
+| Расчетный диапазон дат создания брони | 2013-06-24 — 2017-08-31 |
 
 Ключевые группы признаков:
 
@@ -45,17 +43,11 @@
 - история клиента: `is_repeated_guest`, `previous_cancellations`, `previous_bookings_not_canceled`;
 - операционные признаки: `reserved_room_type`, `required_car_parking_spaces`, `total_of_special_requests`.
 
-Основной датасет используется как **primary modeling dataset**, потому что он богаче по продуктовым признакам: есть тип отеля, тип депозита, канал дистрибуции, страна, агент, customer type и признаки, нужные для расчета выручки под риском.
+Основной датасет используется как **primary modeling dataset**, потому что он богаче по продуктовым признакам и позволяет считать `booking_value = adr × total_nights`.
 
 ### 1.2. Дополнительный датасет
 
-**Hotel Reservations Classification Dataset**.
-
-Источник: Kaggle `ahsan81/hotel-reservations-classification-dataset`.
-
-Файл: `Hotel Reservations.csv`.
-
-Состав:
+**Hotel Reservations Classification Dataset**. Файл: `data/raw/Hotel Reservations.csv`.
 
 | Параметр | Значение |
 |---|---:|
@@ -68,547 +60,315 @@
 | Диапазон дат заезда | 2017-07-01 — 2018-12-31 |
 | Диапазон расчетных дат создания брони | 2016-10-17 — 2018-12-30 |
 
-Дополнительный датасет не объединяется с основным «вслепую», потому что схема уже, часть признаков отсутствует (`hotel`, `deposit_type`, `distribution_channel`, `country`, `customer_type`), а семантика метки немного отличается: в основном датасете `is_canceled=1` включает `Canceled` и `No-Show`, а в дополнительном датасете есть только `Canceled` / `Not_Canceled`.
+Дополнительный датасет не объединяется с основным вслепую. В нем отсутствуют `hotel`, `deposit_type`, `distribution_channel`, `country`, `customer_type`, часть признаков имеет другую семантику, а метка не содержит отдельного `No-Show`. Его корректная роль — external validation / проверка переносимости закономерностей.
 
-Корректная роль дополнительного датасета:
-
-1. внешняя проверка устойчивости закономерностей;
-2. проверка переносимости модели на другую схему бронирований;
-3. источник для common-schema экспериментов;
-4. не основной источник для финальной модели продукта.
-
-### 1.3. Подготовленные файлы на выходе
-
-В рамках ДЗ №4 сформированы три файла:
+### 1.3. Выходные файлы
 
 | Файл | Назначение |
 |---|---|
-| `data/processed/main_modeling_dataset.csv` | основной очищенный датасет для обучения, validation и test |
-| `data/processed/additional_harmonized_dataset.csv` | дополнительный датасет, приведенный к общей схеме; использовать как external validation |
-| `data/processed/combined_common_schema_dataset.csv` | объединенная таблица с `source_dataset`; использовать только для domain-aware экспериментов |
+| `data/processed/main_modeling_dataset.csv` | основной очищенный датасет для train/validation/test |
+| `data/processed/additional_harmonized_dataset.csv` | дополнительный датасет, приведенный к общей схеме для external validation |
+| `data/processed/combined_common_schema_dataset.csv` | объединенный датасет с `source_dataset`; использовать только для domain-aware экспериментов |
 
 ---
 
 ## 2. Постановка задачи и момент прогноза
 
-### 2.1. ML-задача
-
-Задача формулируется как бинарная классификация:
+ML-задача — бинарная классификация:
 
 ```text
 y = is_canceled
-0 — бронирование реализовалось
-1 — бронирование отменено / не реализовалось
+0 — бронирование не отменено
+1 — бронирование отменено или no-show
 ```
 
-Модель должна возвращать вероятность:
+Модель должна возвращать вероятность отмены:
 
 ```text
-risk_score = P(is_canceled = 1)
+P(is_canceled = 1)
 ```
 
-В продукте `risk_score` используется не как автоматическое решение «отменит / не отменит», а как инструмент ранжирования: revenue-менеджеру важны верхние 10–20% бронирований с максимальным риском.
-
-### 2.2. Момент прогноза
-
-Фиксируем production-like момент прогноза:
+Момент прогноза:
 
 ```text
-после создания бронирования, но до отмены, до заезда и до финального статуса бронирования
+после создания бронирования, но до отмены, до даты заезда и до финального статуса бронирования
 ```
 
-Следствие: в модель можно включать только признаки, которые известны на этот момент. Это ключевой контроль против data leakage.
+Это решение определяет leakage audit. В признаки можно включать только то, что известно на момент бронирования или до начала управленческого действия.
 
 ---
 
-## 3. Базовый EDA и выводы для моделирования
+## 3. Базовый EDA с фактурой анализа
 
 ### 3.1. Target distribution
 
-| Датасет | Positive class | Доля отмен |
-|---|---|---:|
-| Основной | `is_canceled = 1` | 37.04% |
-| Дополнительный | `booking_status = Canceled` | 32.76% |
+![Target distribution](../reports/figures/hw4_eda/hw4_target_distribution.png)
 
-Вывод: сильного экстремального дисбаланса нет, но положительный класс меньше отрицательного. Accuracy не должна быть основной метрикой. Для продукта важнее `Precision@K`, `Recall@K`, `Lift@K`, ROC-AUC/PR-AUC и бизнес-метрика `Expected Revenue at Risk`.
+Доля отмен — 37.04%. Это не экстремальный дисбаланс, но accuracy не должна быть основной метрикой. Для продукта важно находить верхние 10–20% рискованных бронирований, поэтому следующие этапы должны использовать ROC-AUC, PR-AUC, Recall/Precision по классу отмен, Precision@K, Recall@K и Lift@K.
 
-### 3.2. Тип отеля
+### 3.2. Пропуски
 
-| Тип отеля | Количество строк | Доля отмен | Средний ADR | Средняя длительность |
-|---|---:|---:|---:|---:|
-| City Hotel | 79 330 | 41.73% | 105.30 | 2.98 ночи |
-| Resort Hotel | 40 060 | 27.76% | 94.95 | 4.32 ночи |
+![Missing values](../reports/figures/hw4_eda/hw4_missing_values.png)
 
-Выводы:
+Пропуски в основном датасете:
 
-- `hotel` — сильный сегментирующий признак;
-- City Hotel имеет существенно более высокий риск отмены;
-- качество модели нужно оценивать отдельно по `City Hotel` и `Resort Hotel`, иначе общий ROC-AUC может скрыть провал на одном сегменте.
+| Колонка | Пропусков | Комментарий |
+|---|---:|---|
+| `company` | 112 593 | почти полностью пустой ID; сырой признак не используем, оставляем `has_company` |
+| `agent` | 16 340 | заполняем неизвестного агента отдельной категорией + `agent_missing` |
+| `country` | 488 | заполняем `Unknown` + `country_missing` |
+| `children` | 4 | заполняем 0 |
 
-### 3.3. Lead time
+### 3.3. Некорректные строки и выбросы
 
-| Lead time bin | Количество строк | Доля отмен |
-|---|---:|---:|
-| 0–7 дней | 19 746 | 9.63% |
-| 8–30 дней | 18 960 | 27.86% |
-| 31–90 дней | 29 553 | 37.70% |
-| 91–180 дней | 26 439 | 44.71% |
-| 181–365 дней | 21 544 | 55.45% |
-| 366+ дней | 3 148 | 67.66% |
+![Numeric distributions](../reports/figures/hw4_eda/hw4_numeric_distributions.png)
 
-В дополнительном датасете картина еще жестче: для `lead_time > 365` доля отмен составляет 95.06%.
+Санитарные проверки:
 
-Выводы:
+| Проверка | Количество строк | Решение |
+|---|---:|---|
+| `total_guests == 0` | 180 | удалить |
+| `total_nights == 0` | 715 | удалить |
+| `adr < 0` | 1 | удалить |
+| `arrival_date is missing` | 0 | проблем нет |
+| `lead_time < 0` | 0 | проблем нет |
 
-- `lead_time` — один из ключевых предикторов;
-- зависимость монотонная: чем раньше создано бронирование относительно заезда, тем выше риск;
-- для product UX это можно объяснять пользователю как фактор риска;
-- нужен контроль по горизонту прогнозирования: ежедневный сценарий 7–30 дней до заезда не равен прогнозу в момент создания бронирования за 180 дней.
+После очистки основной датасет содержит **118 564 строки** и **44 колонки**.
 
-### 3.4. Рыночный сегмент и канал
+### 3.4. Тип отеля, сегменты и каналы
 
-Основной датасет:
+![Core categories](../reports/figures/hw4_eda/hw4_cancellation_rates_by_core_categories.png)
 
-| Market segment | Количество строк | Доля отмен |
-|---|---:|---:|
-| Online TA | 56 477 | 36.72% |
-| Offline TA/TO | 24 219 | 34.32% |
-| Groups | 19 811 | 61.06% |
-| Direct | 12 606 | 15.34% |
-| Corporate | 5 295 | 18.73% |
-| Complementary | 743 | 13.06% |
+Ключевые наблюдения:
 
-Канал `TA/TO` имеет долю отмен 41.03%, `Direct` — 17.46%, `Corporate` — 22.08%.
+- `City Hotel` имеет более высокий cancellation rate: 41.73% против 27.76% у `Resort Hotel`.
+- `Groups` — один из самых рискованных массовых сегментов: cancellation rate около 61.06%.
+- `TA/TO` как distribution channel имеет существенно более высокий риск отмен, чем Direct.
+- `Transient` клиенты отменяют чаще, чем `Group` и `Transient-Party`.
 
-Выводы:
+Вывод для модели: `hotel`, `market_segment`, `distribution_channel`, `customer_type` — обязательные категориальные признаки первой модели. Редкие категории вроде `Undefined` нельзя трактовать как устойчивую бизнес-закономерность.
 
-- канал продаж и market segment должны входить в модель;
-- `Groups` — особо рискованный сегмент;
-- прямые и корпоративные бронирования стабильнее;
-- для бизнес-действий можно сегментировать рекомендации: для `Groups` и `Online TA` важнее подтверждение намерения и контроль условий отмены.
+### 3.5. Lead time
 
-### 3.5. Deposit type
+![Lead time](../reports/figures/hw4_eda/hw4_lead_time_volume_and_rate.png)
 
-| Deposit type | Количество строк | Доля отмен |
-|---|---:|---:|
-| No Deposit | 104 641 | 28.38% |
-| Non Refund | 14 587 | 99.36% |
-| Refundable | 162 | 22.22% |
+Cancellation rate растет вместе с `lead_time`:
 
-Выводы:
-
-- `deposit_type` очень сильный признак, но требует осторожности;
-- почти 99.36% отмен в `Non Refund` выглядит как бизнес-артефакт или особенность данных, а не универсальная закономерность;
-- если оставить признак без контроля, модель может переобучиться на него и хуже переноситься на реальные данные конкретного отеля;
-- в финальном моделировании нужно считать метрики отдельно по `deposit_type`, а также провести ablation-test модели без `deposit_type`.
-
-### 3.6. Special requests
-
-| Количество special requests | Количество строк | Доля отмен |
-|---:|---:|---:|
-| 0 | 70 318 | 47.72% |
-| 1 | 33 226 | 22.02% |
-| 2 | 12 969 | 22.10% |
-| 3 | 2 497 | 17.86% |
-| 4 | 340 | 10.59% |
-| 5 | 40 | 5.00% |
-
-В дополнительном датасете эффект подтверждается: при 0 special requests доля отмен 43.21%, при 2 — 14.60%, при 3+ — 0%.
-
-Выводы:
-
-- `total_of_special_requests` — сильный и интерпретируемый признак;
-- отсутствие специальных запросов связано с более низкой вовлеченностью гостя и более высоким риском отмены;
-- в продукте фактор можно показывать в локальном объяснении риска.
-
-### 3.7. Repeated guest и история отмен
-
-| Признак | Значение | Доля отмен |
-|---|---:|---:|
-| `is_repeated_guest` | 0 | 37.79% |
-| `is_repeated_guest` | 1 | 14.49% |
-| `repeated_guest` в дополнительном датасете | 1 | 1.72% |
-
-Выводы:
-
-- повторные гости заметно стабильнее;
-- признаки истории клиента нужны в модели;
-- в интерфейсе можно использовать как объяснение: repeated guest снижает риск.
-
-### 3.8. Parking spaces
-
-В основном датасете для бронирований с `required_car_parking_spaces > 0` отмены не встречаются. В дополнительном датасете риск при парковке также ниже: 10.14% против 33.49% без парковки.
-
-Выводы:
-
-- признак сильный и бизнес-интерпретируемый;
-- нужно проверить момент доступности: если парковка указывается при бронировании, признак можно использовать;
-- при переносе на реальные данные отеля важно убедиться, что этот признак не заполняется постфактум.
-
-### 3.9. ADR и booking value
-
-Суммарная расчетная стоимость бронирований в основном датасете:
-
-| Метрика | Значение |
+| Lead time bin | Доля отмен |
 |---|---:|
-| `sum(adr * total_nights)` по всем валидным строкам | 42 723 561.33 |
-| `sum(adr * total_nights)` по отмененным строкам | 16 727 237.12 |
-| Доля booking value, связанная с отмененными бронями | 39.15% |
+| 0–7 дней | 9.63% |
+| 8–30 дней | 27.86% |
+| 31–90 дней | 37.70% |
+| 91–180 дней | 44.71% |
+| 181–365 дней | 55.45% |
+| 366+ дней | 67.66% |
 
-Выводы:
+Вывод для модели: `lead_time` — один из главных risk factors. Дополнительно создается бизнес-интерпретируемый признак `is_long_lead_booking = lead_time > 90`.
 
-- для продукта важно ранжировать не только по вероятности отмены, но и по потенциальной выручке;
-- итоговый приоритет может быть `risk_score * booking_value`, а не только `risk_score`;
-- в ДЗ №5/прототипе нужно показывать `Expected Revenue at Risk` на уровне брони и портфеля.
+### 3.6. Behavioral factors: депозит, спецзапросы, повторный гость, парковка
 
----
+![Behavioral factors](../reports/figures/hw4_eda/hw4_cancellation_rates_by_behavioral_factors.png)
 
-## 4. Качество данных
+Фактура:
 
-### 4.1. Пропуски в основном датасете
+- `deposit_type=Non Refund` почти детерминированно связан с отменой в этом публичном датасете: cancellation rate около 99.36%.
+- Бронирования без специальных запросов отменяются чаще: около 47.72%.
+- Повторные гости отменяют реже: около 14.49% против 37.79% у неповторных.
+- Бронирования с парковочным местом в этом датасете практически не отменяются.
 
-| Колонка | Пропуски | Доля |
-|---|---:|---:|
-| `company` | 112 593 | 94.31% |
-| `agent` | 16 340 | 13.69% |
-| `country` | 488 | 0.41% |
-| `children` | 4 | ~0.00% |
+Вывод для модели: признаки сильные и доступны до заезда, но `deposit_type` и `parking_spaces` нужно мониторить в реальном пилоте: их связь с отменой может зависеть от политики конкретного отеля.
 
-Решение:
+### 3.7. Сезонность
 
-- `children`: заполнить 0;
-- `country`: заполнить `Unknown` + добавить `country_missing`;
-- `agent`: заполнить `0` / `No agent` + добавить `agent_missing`;
-- `company`: не использовать как категориальный ID из-за 94.31% пропусков, заменить на `has_company`.
+![Arrival month](../reports/figures/hw4_eda/hw4_arrival_month_volume_and_rate.png)
 
-### 4.2. Некорректные и спорные строки
+![Monthly by hotel](../reports/figures/hw4_eda/hw4_monthly_cancellation_rate_by_hotel.png)
 
-Основной датасет:
+Есть календарная структура: cancellation rate меняется по месяцам и типам отеля. Это аргумент в пользу time-based split, а не random split.
 
-| Проверка | Количество | Доля |
-|---|---:|---:|
-| `total_guests == 0` | 180 | 0.15% |
-| `total_nights == 0` | 715 | 0.60% |
-| `adr < 0` | 1 | ~0.00% |
-| `adr == 0` | 1 959 | 1.64% |
-| `lead_time > 365` | 3 148 | 2.64% |
+### 3.8. Взаимодействия признаков
 
-Дополнительный датасет:
+![Market segment hotel heatmap](../reports/figures/hw4_eda/hw4_heatmap_market_segment_hotel.png)
 
-| Проверка | Количество | Доля |
-|---|---:|---:|
-| пропуски | 0 | 0.00% |
-| exact duplicates | 0 | 0.00% |
-| `total_nights == 0` | 78 | 0.22% |
-| `avg_price_per_room == 0` | 545 | 1.50% |
-| `lead_time > 365` | 243 | 0.67% |
-| невалидная дата заезда | 37 | 0.10% |
+![Lead time deposit heatmap](../reports/figures/hw4_eda/hw4_heatmap_lead_time_deposit.png)
 
-Решение для модельного датасета:
+Вывод: риск отмены формируется не одним признаком, а комбинациями `lead_time × deposit_type × market_segment × hotel`. Поэтому в следующих этапах нужен не только rule-based baseline, но и ML-модель, умеющая ловить взаимодействия признаков.
 
-- удалить строки с `total_guests == 0`;
-- удалить строки с `total_nights == 0`;
-- удалить строки с `adr < 0`;
-- удалить строки с невалидной датой заезда;
-- `adr == 0` не удалять автоматически: это может быть complementary / нулевой тариф, но добавить контроль в EDA;
-- `lead_time > 365` не удалять автоматически: это редкий, но бизнес-значимый сегмент высокого риска.
+### 3.9. Денежная фактура
 
-### 4.3. Дубликаты
+![Canceled booking value](../reports/figures/hw4_eda/hw4_canceled_booking_value_by_segment.png)
 
-В основном датасете найдено 31 994 exact duplicates, то есть 26.80% строк. Удалять их автоматически нельзя, потому что в датасете нет уникального booking ID: два разных бронирования могут иметь одинаковые признаки. Для моделирования добавляется синтетический `booking_id`, но он не используется как признак.
-
-Рекомендация для реального пилота: получать исходный `reservation_id` из PMS/CRM и проверять дубликаты по ключу бронирования, а не по полному совпадению признаков.
+Для продукта сохраняются `adr`, `total_nights`, `booking_value`, потому что ML-score должен быть связан с бизнес-слоем: expected revenue at risk. Иначе проект останется моделью, а не инструментом revenue-менеджера.
 
 ---
 
-## 5. Leakage audit
+## 4. Leakage audit
 
-### 5.1. Исключаемые признаки
+![Leakage check](../reports/figures/hw4_eda/hw4_leakage_reservation_status.png)
+
+`reservation_status` полностью кодирует целевую переменную:
+
+| `reservation_status` | `is_canceled=0` | `is_canceled=1` |
+|---|---:|---:|
+| `Canceled` | 0 | 43 017 |
+| `Check-Out` | 75 166 | 0 |
+| `No-Show` | 0 | 1 207 |
+
+Исключаемые признаки:
 
 | Признак | Решение | Причина |
 |---|---|---|
-| `reservation_status` | исключить | прямое отражение итогового статуса |
-| `reservation_status_date` | исключить | содержит дату отмены/check-out/no-show |
-| `assigned_room_type` | исключить в базовой версии | может быть известен после операционного распределения номера |
-| `booking_changes` | исключить в базовой версии | может накапливаться после создания бронирования |
-| `days_in_waiting_list` | исключить в базовой версии | неоднозначен по моменту доступности |
-| `company` | не использовать raw ID | 94.31% пропусков; заменить на `has_company` |
+| `reservation_status` | исключить | напрямую отражает итог бронирования |
+| `reservation_status_date` | исключить | содержит дату статуса/отмены/выезда |
+| `assigned_room_type` | исключить в первой версии | может быть назначен позже |
+| `booking_changes` | исключить в первой версии | может изменяться после создания бронирования |
+| `days_in_waiting_list` | исключить в первой версии | не гарантированно известен в момент прогноза |
 
-### 5.2. Разрешенные признаки
-
-В базовой постановке разрешены признаки, доступные при создании брони:
-
-- тип отеля;
-- `lead_time`;
-- планируемая дата заезда;
-- длительность проживания;
-- состав гостей;
-- тип питания;
-- страна;
-- market segment;
-- distribution channel;
-- repeated guest;
-- previous cancellations / previous bookings not canceled;
-- reserved room type;
-- deposit type;
-- customer type;
-- adr;
-- required parking spaces;
-- total special requests.
+Консервативное решение: лучше получить более низкую, но честную метрику, чем завышенное качество из-за утечки.
 
 ---
 
-## 6. Оценка качества разметки
+## 5. Оценка качества разметки
 
-### 6.1. Тип разметки
+Разметка событийная, не ручная: `is_canceled=1`, если итоговый статус `Canceled` или `No-Show`, и `0`, если `Check-Out`. Субъективной человеческой разметки нет, поэтому нет классической проблемы межразметочного согласия. Основные ограничения другие:
 
-Разметка не ручная. Это транзакционная разметка из системы бронирований:
+1. `Canceled` и `No-Show` объединены в один положительный класс, хотя управленческие действия могут отличаться.
+2. Нет информации, была ли отмена поздней и насколько она вредна для выручки.
+3. Нет признака, могла ли интервенция менеджера предотвратить отмену.
+4. Реальный бизнес-лейбл должен быть ближе к `avoidable_cancellation` или `late_cancellation`, но в публичном датасете этого нет.
 
-- основной датасет: `is_canceled`;
-- дополнительный датасет: `booking_status`, преобразованный в `is_canceled`.
+Предложения по повышению качества разметки для реального пилота:
 
-Плюсы:
-
-- нет субъективности разметчика;
-- нет затрат на ручную аннотацию;
-- метка напрямую связана с бизнес-событием.
-
-Минусы:
-
-- в основном датасете `is_canceled=1` объединяет `Canceled` и `No-Show`;
-- в дополнительном датасете no-show явно не выделен;
-- неизвестна причина отмены: клиентская отмена, гостиничная отмена, ошибка канала, изменение групповой брони;
-- неизвестен точный timestamp создания брони, он восстановлен через `arrival_date - lead_time`;
-- не видно, применялись ли к бронированию управленческие действия до отмены.
-
-### 6.2. Проверка согласованности метки в основном датасете
-
-Кросс-проверка показывает:
-
-| `reservation_status` | `is_canceled` |
-|---|---:|
-| `Check-Out` | 0 |
-| `Canceled` | 1 |
-| `No-Show` | 1 |
-
-С точки зрения продукта это допустимо, если целевая переменная трактуется как **booking will not materialize**, то есть бронирование не принесет ожидаемую реализацию. Если нужно строго прогнозировать только customer cancellation, no-show следует выделить в отдельный класс.
-
-### 6.3. Предложения по повышению качества разметки
-
-Для реального пилота необходимо расширить логику разметки:
-
-1. Разделить целевые события: `canceled_before_arrival`, `no_show`, `completed`, `hotel_cancelled`.
-2. Добавить `cancellation_datetime`, а не только итоговый статус.
-3. Добавить причину отмены и сторону-инициатора.
-4. Добавить условия тарифа и штрафы за отмену.
-5. Добавить факт и тип управленческого воздействия: reminder, confirmation request, deposit request.
-6. Добавить исходный `booking_created_at` из PMS, а не вычислять его через `arrival_date - lead_time`.
-7. Ввести data contract: какие поля гарантированно доступны на момент скоринга.
-8. Регулярно проводить label drift audit: меняются ли правила отмен, депозитов и no-show.
+- хранить отдельно `Canceled`, `No-Show`, `Late Cancellation`;
+- фиксировать timestamp отмены и число дней до заезда в момент отмены;
+- хранить факт и тип действия менеджера;
+- формировать label для эффекта интервенций;
+- раздельно оценивать модели для отмен и no-show.
 
 ---
 
-## 7. Алгоритм формирования выборки
+## 6. Алгоритм формирования выборки
 
-### 7.1. Основной алгоритм
+Алгоритм:
 
-```text
-1. Загрузить hotel_bookings.csv.
-2. Добавить синтетический booking_id.
-3. Создать arrival_date из year/month/day.
-4. Создать booking_creation_date = arrival_date - lead_time.
-5. Создать признаки:
-   - total_nights
-   - total_guests
-   - has_children
-   - has_previous_cancellations
-   - has_special_requests
-   - is_long_lead_booking
-   - is_weekend_stay
-   - booking_value = adr * total_nights
-   - arrival_season
-   - country_missing
-   - agent_missing
-   - has_company
-6. Очистить строки:
-   - total_guests > 0
-   - total_nights > 0
-   - adr >= 0
-   - arrival_date is not null
-7. Заполнить пропуски:
-   - children = 0
-   - country = Unknown
-   - agent = 0 / No agent
-   - company → has_company
-8. Исключить leakage-признаки:
-   - reservation_status
-   - reservation_status_date
-   - assigned_room_type
-   - booking_changes
-   - days_in_waiting_list
-9. Присвоить split по booking_creation_date.
-10. Сохранить main_modeling_dataset.csv.
-```
-
-### 7.2. Разбиение на train / validation / test
-
-Используется временное разбиение по расчетной дате создания бронирования:
-
-| Split | Период `booking_creation_date` | Строк | Доля отмен |
-|---|---|---:|---:|
-| Train | до 2016-10-31 включительно | 82 050 | 38.24% |
-| Validation | 2016-11-01 — 2017-03-31 | 27 262 | 37.35% |
-| Test | 2017-04-01 и позже | 9 252 | 28.28% |
-
-Почему не random split:
-
-- в реальном продукте модель обучается на прошлом и применяется к будущим бронированиям;
-- random split смешивает периоды и может завысить качество;
-- у бронирований есть сезонность и временной drift.
-
-### 7.3. Роль дополнительного датасета
-
-Для `Hotel Reservations.csv` формируется файл `additional_harmonized_dataset.csv`:
-
-```text
-booking_status -> is_canceled
-avg_price_per_room -> adr
-no_of_weekend_nights -> stays_in_weekend_nights
-no_of_week_nights -> stays_in_week_nights
-no_of_adults -> adults
-no_of_children -> children
-type_of_meal_plan -> meal
-room_type_reserved -> reserved_room_type
-market_segment_type -> market_segment
-repeated_guest -> is_repeated_guest
-no_of_previous_cancellations -> previous_cancellations
-no_of_previous_bookings_not_canceled -> previous_bookings_not_canceled
-no_of_special_requests -> total_of_special_requests
-```
-
-Этот датасет получает `split = external` и `source_dataset = hotel_reservations_classification`.
+1. Загрузить `hotel_bookings.csv` и `Hotel Reservations.csv`.
+2. Восстановить `arrival_date` и расчетную `booking_creation_date`.
+3. Создать признаки:
+   - `total_nights`;
+   - `total_guests`;
+   - `has_children`;
+   - `has_previous_cancellations`;
+   - `has_special_requests`;
+   - `is_long_lead_booking`;
+   - `is_weekend_stay`;
+   - `country_missing`;
+   - `agent_missing`;
+   - `has_company`;
+   - `booking_value`;
+   - `arrival_season`.
+4. Заполнить пропуски:
+   - `children → 0`;
+   - `country → Unknown`;
+   - `agent → Unknown/0`;
+   - `company → has_company`.
+5. Удалить строки:
+   - без гостей;
+   - без ночей;
+   - с отрицательным `adr`;
+   - с некорректной датой заезда.
+6. Исключить leakage-признаки.
+7. Сделать time-based split по `booking_creation_date`.
+8. Сохранить три итоговых CSV.
 
 ---
 
-## 8. Стратегия валидации
+## 7. Стратегия train / validation / test
 
-### 8.1. Основная стратегия
+![Split summary](../reports/figures/hw4_eda/hw4_split_summary.png)
 
-Основная стратегия: **time-based holdout + rolling backtest на следующих этапах**.
+![Split by hotel](../reports/figures/hw4_eda/hw4_split_cancellation_rate_by_hotel.png)
 
-Минимально для ДЗ №4:
+Split формируется по расчетной дате создания бронирования:
 
-- train: старые бронирования;
-- validation: следующий временной период для подбора признаков, модели и threshold;
-- test: последний период только для финальной оценки.
-
-Для дальнейшей работы:
-
-```text
-Fold 1: train до T1 → validate T1:T2
-Fold 2: train до T2 → validate T2:T3
-Fold 3: train до T3 → validate T3:T4
-```
-
-### 8.2. Метрики
-
-Модель оценивается не только как классификатор, но и как ranking-инструмент:
-
-| Метрика | Почему нужна |
+| Split | Правило |
 |---|---|
-| ROC-AUC | общая разделяющая способность |
-| PR-AUC | качество на положительном классе |
-| Recall for cancellations | не пропустить отмены |
-| Precision for cancellations | не перегрузить менеджера ложными тревогами |
-| Precision@10/20% | качество верхнего списка риска |
-| Recall@10/20% | сколько всех отмен найдено в top-risk списке |
-| Lift@10/20% | насколько top-risk список лучше случайного отбора |
-| Expected Revenue at Risk | связь с бизнес-ценностью |
-| Stability by hotel / segment | контроль скрытых провалов по сегментам |
+| `train` | `booking_creation_date <= 2016-10-31` |
+| `valid` | `2016-11-01 <= booking_creation_date <= 2017-03-31` |
+| `test` | `booking_creation_date > 2017-03-31` |
 
-### 8.3. Sanity-check baseline
+Итог:
 
-Для проверки корректности выборки был обучен быстрый baseline `LogisticRegression(class_weight='balanced')` на leakage-free признаках. Это не финальная модель, а sanity-check, что датасет пригоден для ДЗ №5.
+| Split | Строк | Cancellation rate |
+|---|---:|---:|
+| train | 82 050 | 38.24% |
+| valid | 27 262 | 37.35% |
+| test | 9 252 | 28.28% |
 
-| Модель | Split | ROC-AUC | PR-AUC | Precision@20% | Recall@20% | Lift@20% |
-|---|---|---:|---:|---:|---:|---:|
-| Logistic Regression baseline | Validation | 0.8436 | 0.8089 | 0.8751 | 0.4686 | 2.3433 |
-| Logistic Regression baseline | Test | 0.7262 | 0.5180 | 0.5022 | 0.3551 | 1.7760 |
-| Rule-based baseline | Validation | 0.6140 | 0.4502 | 0.5446 | 0.2916 | 1.4582 |
-| Rule-based baseline | Test | 0.5933 | 0.3418 | 0.4670 | 0.3303 | 1.6517 |
-
-Вывод:
-
-- leakage-free признаки дают сигнал;
-- на последнем периоде ROC-AUC ниже целевого ориентира 0.75, но Lift@20% выше 1.5;
-- ML baseline лучше rule-based baseline по Precision@20 и Lift@20 на test;
-- перед продуктовым выводом нужна более сильная модель и rolling validation.
-
-### 8.4. Внешняя проверка на дополнительном датасете
-
-На общей схеме признаков baseline показал:
-
-| Dataset | ROC-AUC | PR-AUC | Precision@20% | Recall@20% | Lift@20% |
-|---|---:|---:|---:|---:|---:|
-| Main test, common features | 0.6973 | 0.4567 | 0.4535 | 0.3207 | 1.6039 |
-| Additional external | 0.7820 | 0.6317 | 0.6979 | 0.4250 | 2.1249 |
-
-Вывод: базовые закономерности частично переносимы, особенно `lead_time`, special requests, repeated guest и market segment. Но из-за различий схемы и метки дополнительный датасет должен использоваться как external validation, а не как безусловное расширение train.
+Test имеет более низкий base rate отмен. Это не дефект, а честная проверка устойчивости модели во времени. В следующем ДЗ нужно смотреть не только ROC-AUC, но и ranking-метрики: Precision@20%, Recall@20%, Lift@20%.
 
 ---
 
-## 9. Финальные решения для следующего этапа моделирования
+## 8. Роль дополнительного датасета
 
-### 9.1. Что используем в первой модели
+![External validation lead time](../reports/figures/hw4_eda/hw4_external_validation_lead_time.png)
 
-Использовать `main_modeling_dataset.csv`.
+Дополнительный датасет приводится к общей схеме, но используется как external validation. Эффект `lead_time` качественно сохраняется, однако прямое объединение с основным train нежелательно из-за сдвига схемы, периода и семантики признаков.
 
-Целевая переменная:
+---
+
+## 9. Финальный список признаков для первой модели
+
+### Target
 
 ```text
 is_canceled
 ```
 
-Основные признаки:
+### Числовые признаки
 
 ```text
-hotel
 lead_time
-arrival_month_num
-arrival_season
-stays_in_weekend_nights
-stays_in_week_nights
 total_nights
-adults
-children
-babies
 total_guests
-meal
-country
-market_segment
-distribution_channel
-is_repeated_guest
-previous_cancellations
-previous_bookings_not_canceled
-reserved_room_type
-deposit_type
-agent
-has_company
-customer_type
 adr
 booking_value
-required_car_parking_spaces
+previous_cancellations
+previous_bookings_not_canceled
 total_of_special_requests
+required_car_parking_spaces
+```
+
+### Бинарные признаки
+
+```text
+is_repeated_guest
 has_children
 has_previous_cancellations
 has_special_requests
 is_long_lead_booking
 is_weekend_stay
+country_missing
+agent_missing
+has_company
 ```
 
-### 9.2. Что не используем
+### Категориальные признаки
 
-Не использовать как признаки:
+```text
+hotel
+arrival_date_month
+arrival_season
+meal
+country
+market_segment
+distribution_channel
+reserved_room_type
+deposit_type
+agent
+customer_type
+```
+
+### Не используем в первой модели
 
 ```text
 reservation_status
@@ -616,44 +376,22 @@ reservation_status_date
 assigned_room_type
 booking_changes
 days_in_waiting_list
-company raw ID
-booking_id
-source_dataset
-split
+company as raw ID
 ```
-
-### 9.3. Как выбирать threshold
-
-Не выбирать threshold по accuracy. Для продукта threshold должен быть выбран по одному из сценариев:
-
-1. `top 20%` по `risk_score` — если менеджер готов обрабатывать фиксированную долю заявок;
-2. `risk_score >= threshold`, где threshold дает Recall по отменам не ниже 0.70;
-3. `expected_loss = risk_score * booking_value` — если приоритетом является выручка под риском;
-4. комбинированно: сначала `risk_score`, затем сортировка по `expected_loss` внутри high-risk.
-
-### 9.4. Risk buckets для прототипа
-
-Стартовые пороги:
-
-| Risk score | Bucket | Действие |
-|---:|---|---|
-| 0.00–0.30 | Low | без дополнительных действий |
-| 0.30–0.60 | Medium | напоминание / мягкое подтверждение |
-| 0.60–0.80 | High | ручная проверка, подтверждение, контроль условий |
-| 0.80–1.00 | Critical | приоритетная проверка, учет в overbooking и revenue planning |
-
-Порог должен быть уточнен на validation через Precision@K, Recall@K, Lift@K и expected revenue at risk.
 
 ---
 
 ## 10. Итог
 
-Главные выводы:
+На выходе получен воспроизводимый dataset package для решения ML-задачи:
 
-1. Данные достаточны для первой модели: после очистки основной датасет содержит 118 564 строки.
-2. Целевая переменная имеет умеренный дисбаланс: 37.04% отмен в основном датасете.
-3. Самые важные EDA-сигналы: `lead_time`, `deposit_type`, `market_segment`, `hotel`, `special_requests`, `repeated_guest`, `parking`.
-4. Главный технический риск — data leakage через итоговый статус и post-factum признаки.
-5. Основная стратегия split — временная, по `booking_creation_date`, а не random split.
-6. Дополнительный датасет использовать для external validation и проверки переносимости, не для слепого объединения.
-7. Метрики должны быть ranking-first: Precision@20, Recall@20, Lift@20 и Expected Revenue at Risk.
+```text
+data/processed/main_modeling_dataset.csv
+data/processed/additional_harmonized_dataset.csv
+data/processed/combined_common_schema_dataset.csv
+notebooks/04_data_understanding_dataset.ipynb
+reports/figures/hw4_eda/*.png
+reports/tables/hw4_*.csv
+```
+
+Главное изменение относительно предыдущей версии: теперь выводы подтверждены кодом, таблицами и визуализациями. Проверяющий может открыть ноутбук, выполнить ячейки и проверить каждое утверждение: от target distribution и пропусков до leakage audit и time-based split.

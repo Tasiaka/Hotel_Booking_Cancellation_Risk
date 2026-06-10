@@ -1,0 +1,6 @@
+column,decision,reason
+reservation_status,exclude,post-factum status; exactly determines target
+reservation_status_date,exclude,contains status/cancellation/check-out date; unavailable at prediction moment
+assigned_room_type,exclude from first modeling dataset,can be assigned or changed later; risk of operational leakage
+booking_changes,exclude from first modeling dataset,can happen after initial booking; not guaranteed at prediction moment
+days_in_waiting_list,exclude from first modeling dataset,may be known only after waiting-list process; keep for later sensitivity test

@@ -1,0 +1,7 @@
+split,hotel,count,cancel_rate
+test,City Hotel,6048,0.2919973544973545
+test,Resort Hotel,3204,0.26529338327091134
+train,City Hotel,54250,0.4294930875576037
+train,Resort Hotel,27800,0.29061151079136693
+valid,City Hotel,18601,0.4300844040642976
+valid,Resort Hotel,8661,0.2518184967093869

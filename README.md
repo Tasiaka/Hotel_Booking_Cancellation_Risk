@@ -30,16 +30,9 @@ hotel-booking-cancellation-risk/
 
 ## ДЗ №4
 
-Главный файл: [`homework_04/data_understanding_and_dataset.md`](homework_04/data_understanding_and_dataset.md).
 
-В нем описаны:
-
-- источник и состав основного и дополнительного датасетов;
-- базовый EDA с выводами, важными для моделирования;
-- оценка качества разметки и план ее улучшения;
-- алгоритм формирования модельного датасета;
-- стратегия временной валидации;
-- подготовленные CSV для дальнейшего моделирования.
+- `homework_04/data_understanding_and_dataset.md` — отчет с описанием источников, состава данных, EDA, качества разметки, алгоритма формирования выборки и стратегии валидации.
+- `notebooks/04_data_understanding_dataset.ipynb` — воспроизводимый ноутбук с кодом EDA, таблицами, визуализациями, leakage audit и формированием итоговых датасетов.
 
 ## Датасеты
 
@@ -51,41 +44,15 @@ hotel-booking-cancellation-risk/
 ```text
 data/processed/
 ├── main_modeling_dataset.csv
-├── additional_harmonized_dataset.csv
-└── combined_common_schema_dataset.csv
+├── additional_harmonized_dataset.csv - основной датасет для modeling
+└── combined_common_schema_dataset.csv - объединенный датасет в общей схеме
 ```
 
-## Быстрый запуск подготовки данных
+Дополнительные артефакты:
 
-```bash
-pip install -r requirements.txt
-python src/prepare_dataset.py   --main data/raw/hotel_bookings.csv   --additional "data/raw/Hotel Reservations.csv"   --out data/processed
-```
+- `reports/figures/hw4_eda/` — графики EDA для проверки фактуры анализа.
+- `reports/tables/hw4_*.csv` — таблицы EDA и проверок качества данных.
 
-## Структура
-
-```text
-hotel-booking-cancellation-risk-hw4/
-├── README.md
-├── homework_01/
-├── homework_02/
-├── homework_03/
-├── homework_04/
-│   └── data_understanding_and_dataset.md
-├── notebooks/
-│   └── 04_data_understanding_dataset.ipynb
-├── src/
-│   ├── prepare_dataset.py
-│   ├── schema.py
-│   └── sanity_check_model.py
-├── data/
-│   ├── README.md
-│   └── processed/
-├── reports/
-│   ├── figures/
-│   └── tables/
-└── requirements.txt
-```
 
 ## Ключевой принцип
 

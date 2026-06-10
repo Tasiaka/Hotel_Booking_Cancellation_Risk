@@ -1,0 +1,4 @@
+file,rows,columns,cancel_rate
+data/processed/main_modeling_dataset.csv,118564,44,0.3725920178131642
+data/processed/additional_harmonized_dataset.csv,36160,44,0.328429203539823
+data/processed/combined_common_schema_dataset.csv,154724,44,0.3622708823453375
