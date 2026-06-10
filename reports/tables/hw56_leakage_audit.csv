@@ -1,0 +1,7 @@
+column,nunique,missing_share,decision,reason
+reservation_status,3,0.0,exclude,direct post-factum leakage
+reservation_status_date,926,0.0,exclude,direct post-factum leakage
+assigned_room_type,12,0.0,exclude,not guaranteed at prediction moment
+booking_changes,21,0.0,exclude,not guaranteed at prediction moment
+agent,334,0.13686238378423654,exclude,high-cardinality anonymized operational id; weak transferability
+company,353,0.943068933746545,exclude,high-cardinality anonymized operational id; weak transferability
