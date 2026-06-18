@@ -1,0 +1,16 @@
+booking_id,hotel,arrival_date,deposit_type,market_segment,customer_type,booking_value,risk_score,risk_category,expected_loss,business_priority_score,recommended_action,is_canceled,pred,error_type
+115604,Resort Hotel,2017-08-09,No Deposit,Offline TA/TO,Contract,674.25,0.006436695058396293,Low,4.339941643123701,4.339941643123701,без дополнительных действий,1,0,FN
+111785,City Hotel,2017-07-16,No Deposit,Direct,Transient,270.0,0.016522358327565233,Low,4.461036748442613,4.461036748442613,без дополнительных действий,1,0,FN
+103634,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+103703,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+103701,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+103692,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+103663,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+103633,Resort Hotel,2017-06-02,No Deposit,Online TA,Transient,210.0,0.023668100922552022,Low,4.970301193735924,4.970301193735924,без дополнительных действий,1,0,FN
+105757,City Hotel,2017-06-13,No Deposit,Offline TA/TO,Transient,99.0,0.02727126828421942,Low,2.6998555601377228,2.6998555601377228,без дополнительных действий,1,0,FN
+104604,Resort Hotel,2017-06-07,No Deposit,Online TA,Transient,560.0,0.02842619566834114,Low,15.91866957427104,15.91866957427104,без дополнительных действий,1,0,FN
+109226,Resort Hotel,2017-07-02,No Deposit,Online TA,Transient,882.0,0.029943201275594376,Low,26.409903525074238,26.409903525074238,без дополнительных действий,1,0,FN
+107759,Resort Hotel,2017-06-24,No Deposit,Online TA,Transient,654.08,0.03022956568352483,Low,19.772554322279923,19.772554322279923,без дополнительных действий,1,0,FN
+118505,City Hotel,2017-08-27,No Deposit,Online TA,Transient,185.25,0.031357790369949054,Low,5.809030666033062,5.809030666033062,без дополнительных действий,1,0,FN
+118536,City Hotel,2017-08-27,No Deposit,Online TA,Transient,185.25,0.036396139628362294,Low,6.742384866154115,6.742384866154115,без дополнительных действий,1,0,FN
+108771,City Hotel,2017-06-29,No Deposit,Online TA,Transient-Party,234.0,0.0372537429114474,Low,8.717375841278692,8.717375841278692,без дополнительных действий,1,0,FN
