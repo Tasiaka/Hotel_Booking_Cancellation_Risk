@@ -19,9 +19,7 @@ MVP-сервис для revenue-менеджера отеля: сервис за
 ## Структура проекта
 
 ```text
-hotel_booking_cancellation_risk_mvp_hw8/
 ├── README.md
-├── README_HW8_SUBMISSION.md
 ├── docker-compose.yml
 ├── Dockerfile.api
 ├── Dockerfile.ui
@@ -50,19 +48,13 @@ hotel_booking_cancellation_risk_mvp_hw8/
 ├── ui/
 │   └── streamlit_app.py
 ├── tests/
-├── homework_08/
-│   ├── packaging_mvp.md
-│   └── packaging_mvp_report.md
 └── docs/
-    ├── DATABASE_STORAGE.md
-    ├── LOCAL_ONLY_RUN.md
-    └── HW8_SCREENSHOT_GUIDE.md
 ```
 
 ## Локальный запуск без Docker
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements-mvp.txt
