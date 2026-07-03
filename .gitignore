@@ -28,3 +28,7 @@ __pycache__/
 *.tmp
 *.temp
 *.log
+
+# local database files
+storage/*.db
+*.db

@@ -1,0 +1,11 @@
+[project]
+name = "hotel-booking-cancellation-risk"
+version = "0.8.0"
+description = "MVP service for hotel booking cancellation risk scoring"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

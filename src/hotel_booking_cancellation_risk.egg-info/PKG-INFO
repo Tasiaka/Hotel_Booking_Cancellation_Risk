@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: hotel-booking-cancellation-risk
+Version: 0.8.0
+Summary: MVP service for hotel booking cancellation risk scoring
+Requires-Python: >=3.10

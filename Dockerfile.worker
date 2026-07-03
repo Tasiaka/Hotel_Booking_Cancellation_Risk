@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libgomp1 curl && rm -rf /var/lib/apt/lists/*
+COPY requirements-mvp.txt /app/requirements-mvp.txt
+RUN pip install --no-cache-dir -r /app/requirements-mvp.txt
+COPY . /app
+RUN if [ -f data/processed/main_modeling_dataset.csv ]; then python -m hotel_risk.train --data data/processed/main_modeling_dataset.csv --model models/hw8_model.joblib --metrics reports/tables/hw8_model_metrics.json --max-rows 60000; fi
+CMD ["python", "-m", "hotel_risk.worker"]

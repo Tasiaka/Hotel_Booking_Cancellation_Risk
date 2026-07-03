@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: hotel_risk
+      POSTGRES_USER: hotel_risk
+      POSTGRES_PASSWORD: hotel_risk
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hotel_risk -d hotel_risk"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      HOTEL_RISK_DATABASE_URL: postgresql+psycopg2://hotel_risk:hotel_risk@postgres:5432/hotel_risk
+      HOTEL_RISK_REDIS_URL: redis://redis:6379/0
+      HOTEL_RISK_MODEL_PATH: models/hw8_model.joblib
+      HOTEL_RISK_ENV: docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/storage/uploads
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      HOTEL_RISK_DATABASE_URL: postgresql+psycopg2://hotel_risk:hotel_risk@postgres:5432/hotel_risk
+      HOTEL_RISK_REDIS_URL: redis://redis:6379/0
+      HOTEL_RISK_MODEL_PATH: models/hw8_model.joblib
+      HOTEL_RISK_ENV: docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/storage/uploads
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    environment:
+      HOTEL_RISK_API_URL: http://api:8000
+      HOTEL_RISK_DEMO_DATA: data/processed/main_modeling_dataset.csv
+    depends_on:
+      - api
+    ports:
+      - "8501:8501"
+
+
+volumes:
+  pgdata:
+  uploads:

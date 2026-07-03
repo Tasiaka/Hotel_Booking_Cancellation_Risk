@@ -1,0 +1,12 @@
+{
+  "users": {
+    "volchonok": {
+      "salt": "7f87cc3cbe5cf31df86ee938ec6a1e61",
+      "password_hash": "267fe9094ae867d3e189895f5146b024d26af59bc3a17d00b1729f8d95e7810b",
+      "algorithm": "pbkdf2_sha256",
+      "role": "user",
+      "label": "ajsnd",
+      "source": "registered"
+    }
+  }
+}

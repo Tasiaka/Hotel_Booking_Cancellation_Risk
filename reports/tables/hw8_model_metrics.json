@@ -1,0 +1,34 @@
+{
+  "model": "LightGBM FE TE conservative + Platt calibration",
+  "model_selection": "best candidate by validation ROC-AUC/PR-AUC/Lift@20",
+  "calibration_method": "Platt sigmoid on validation split",
+  "expected_loss_probability": "cancellation_probability",
+  "rows_train": 82050,
+  "rows_calibration": 27262,
+  "rows_test": 9252,
+  "roc_auc": 0.8585306342662485,
+  "pr_auc": 0.6771129184939146,
+  "brier": 0.14026928977925676,
+  "roc_auc_raw": 0.8585306342662485,
+  "pr_auc_raw": 0.6771129184939146,
+  "brier_raw": 0.14247382565550676,
+  "candidate_metrics": [
+    {
+      "name": "LightGBM FE TE conservative",
+      "valid_roc_auc": 0.9127982768376204,
+      "valid_pr_auc": 0.8703377506704447,
+      "valid_lift@20": 2.438053332985508,
+      "selection_score": 0.8800373524856441
+    },
+    {
+      "name": "LightGBM FE TE stronger",
+      "valid_roc_auc": 0.9116140644568081,
+      "valid_pr_auc": 0.8688266633088157,
+      "valid_lift@20": 2.4301949821942572,
+      "selection_score": 0.8784680300339993
+    }
+  ],
+  "precision@20": 0.687027027027027,
+  "recall@20": 0.48585626911314983,
+  "lift@20": 2.429806595586412
+}
