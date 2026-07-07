@@ -9,6 +9,9 @@ class HealthResponse(BaseModel):
     app: str
     model: str
     database: str
+    model_status: str = "unknown"
+    model_path: str | None = None
+    warning: str | None = None
 
 
 class DomainEntityResponse(BaseModel):
@@ -70,14 +73,20 @@ class ValidationResponse(BaseModel):
     defaulted_columns: list[str]
     ignored_columns: list[str]
     preview: list[dict[str, Any]] = []
+    schema_confidence: float = 1.0
+    defaulted_ratio: float = 0.0
+    quality_status: str = "green"
+    quality_message: str = "Данные подходят для скоринга."
 
 
 class PredictionResponse(BaseModel):
     booking_id: str
     hotel: str
+    arrival_date: str | None = None
     market_segment: str
     distribution_channel: str
     deposit_type: str
+    customer_type: str | None = None
     adr: float
     total_nights: int
     booking_value: float
@@ -113,6 +122,12 @@ class BatchResponse(BaseModel):
     error_message: str | None = None
 
 
+class BatchUploadResponse(BatchResponse):
+    summary: dict[str, Any] | None = None
+    predictions: list[PredictionResponse] | None = None
+    validation: dict[str, Any] | None = None
+
+
 class SchemaResponse(BaseModel):
     required_columns: list[str]
     optional_columns: list[str]
@@ -130,6 +145,9 @@ class ModelInfoResponse(BaseModel):
     numeric_features: list[str]
     categorical_features: list[str]
     risk_thresholds: dict[str, float]
+    model_status: str = "unknown"
+    is_fallback: bool = False
+    warning: str | None = None
 
 
 class SimulationRequest(BaseModel):
@@ -160,3 +178,14 @@ class OverviewResponse(BaseModel):
     high_risk_total: int
     expected_loss_total: float
     recent_batches: list[BatchResponse]
+
+
+class ScoringJobResponse(BaseModel):
+    id: int
+    batch_id: int | None = None
+    queue_job_id: str | None = None
+    status: str
+    worker_name: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+

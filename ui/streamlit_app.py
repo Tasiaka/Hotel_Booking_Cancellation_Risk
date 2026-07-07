@@ -37,7 +37,10 @@ if not ui_logger.handlers:
     handler.setFormatter(formatter)
     ui_logger.addHandler(handler)
 
-st.set_page_config(page_title="Hotel Risk MVP", page_icon="🏨", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Hotel Risk", page_icon="🏨", layout="wide", initial_sidebar_state="collapsed")
+
+DEFAULT_CURRENCY_CODE = "USD"
+DEFAULT_COST_PER_ACTION = 5.0
 
 DEFAULT_USERS = {
     "admin": {"password": "admin", "role": "admin", "label": "Администратор", "source": "demo"},
@@ -52,10 +55,13 @@ for key, default in {
     "batch": None,
     "top_share": 0.20,
     "success_rate": 0.25,
-    "cost_per_action": 150.0,
+    "cost_per_action": DEFAULT_COST_PER_ACTION,
+    "currency_code": DEFAULT_CURRENCY_CODE,
     "ui_logs": [],
-    "manager_view": "Обзор",
+    "manager_view": "Список к проверке",
     "admin_view": "Статус",
+    "last_analysis_signature": None,
+    "recommended_review_ids": [],
 }.items():
     st.session_state.setdefault(key, default)
 
@@ -157,7 +163,7 @@ st.markdown(
       position: relative;
       z-index: 2;
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: clamp(.85rem, 2vw, 1.2rem);
       max-width: 980px;
     }
@@ -500,9 +506,38 @@ def fmt_int(x: float | int | None) -> str:
         return "—"
 
 
-def fmt_money(x: float | int | None) -> str:
+CURRENCY_OPTIONS = {
+    "EUR": "€",
+    "USD": "$",
+    "RUB": "₽",
+    "GBP": "£",
+}
+
+
+def current_currency_symbol() -> str:
+    code = str(st.session_state.get("currency_code", DEFAULT_CURRENCY_CODE))
+    return CURRENCY_OPTIONS.get(code, CURRENCY_OPTIONS[DEFAULT_CURRENCY_CODE])
+
+
+def current_currency_label() -> str:
+    code = str(st.session_state.get("currency_code", DEFAULT_CURRENCY_CODE))
+    if code not in CURRENCY_OPTIONS:
+        code = DEFAULT_CURRENCY_CODE
+        st.session_state.currency_code = code
+    return f"{code} {current_currency_symbol()}"
+
+
+def fmt_money(x: float | int | None, symbol: str | None = None) -> str:
     text = fmt_int(x)
-    return "—" if text == "—" else f"{text} ₽"
+    if text == "—":
+        return "—"
+    currency_symbol = current_currency_symbol() if symbol is None else symbol
+    return text if not currency_symbol else f"{text} {currency_symbol}"
+
+
+def money_column_format() -> str:
+    symbol = current_currency_symbol()
+    return "%.0f" if not symbol else f"%.0f {symbol}"
 
 
 def fmt_pct(x: float | int | None) -> str:
@@ -606,6 +641,44 @@ def read_sample(path: Path) -> bytes:
     return b""
 
 
+def build_input_signature(source: str, uploaded: Any, df: pd.DataFrame) -> str:
+    """Return a stable fingerprint of the currently selected input data.
+
+    Streamlit keeps session_state between reruns. Without an explicit fingerprint,
+    an already calculated dashboard can remain visible after the user uploads a
+    different CSV and before they press «Запустить анализ». That is dangerous for
+    a decision-support product: the screen would show metrics for the previous
+    file while the controls show the new file.
+    """
+    if source == "demo":
+        if DEMO_PATH.exists():
+            stat = DEMO_PATH.stat()
+            return f"demo:{DEMO_PATH.resolve()}:{stat.st_size}:{int(stat.st_mtime)}:{len(df)}"
+        return f"demo:missing:{len(df)}"
+
+    if uploaded is None:
+        return "upload:none"
+
+    try:
+        content = uploaded.getvalue()
+        digest = hashlib.sha256(content).hexdigest()[:20]
+        size = len(content)
+    except Exception:
+        # Fallback for unexpected UploadedFile implementations. It is enough to
+        # distinguish the visible dataset and force the manager to rerun analysis.
+        digest = hashlib.sha256(pd.util.hash_pandas_object(df, index=True).values.tobytes()).hexdigest()[:20]
+        size = int(getattr(uploaded, "size", 0) or 0)
+
+    return f"upload:{getattr(uploaded, 'name', 'file')}:{size}:{digest}:{len(df)}"
+
+
+def clear_analysis_state() -> None:
+    """Remove analysis artifacts that belong to a previous input dataset."""
+    for key in ["predictions", "summary", "validation", "batch"]:
+        st.session_state[key] = None
+    st.session_state["recommended_review_ids"] = []
+
+
 def optimize_review_list(actionable_pred: pd.DataFrame, success_rate: float, cost_per_action: float) -> tuple[pd.DataFrame, dict[str, float]]:
     """Choose the review list size automatically by expected business effect.
 
@@ -707,12 +780,13 @@ def score_df(df: pd.DataFrame) -> dict:
     return response.json()
 
 
-def upload_batch(df: pd.DataFrame, name: str = "manager_scoring") -> dict:
+def upload_batch(df: pd.DataFrame, name: str = "manager_scoring", return_predictions: bool = True) -> dict:
     buffer = BytesIO()
     df.to_csv(buffer, index=False)
     buffer.seek(0)
     files = {"file": (f"{name}.csv", buffer, "text/csv")}
-    response = requests.post(f"{API_URL}/api/v1/batches/upload", params={"name": name}, files=files, timeout=420)
+    params = {"name": name, "return_predictions": str(return_predictions).lower(), "prediction_limit": max(1, len(df))}
+    response = requests.post(f"{API_URL}/api/v1/batches/upload", params=params, files=files, timeout=420)
     response.raise_for_status()
     return response.json()
 
@@ -740,13 +814,15 @@ def render_topbar() -> dict:
     health = api_health()
     user = st.session_state.auth or {"label": "—"}
     status = "API online" if health.get("status") == "ok" else "API offline"
+    model_status = health.get("model_status", "unknown")
     st.markdown(
         f"""
         <div class="topbar">
-          <div class="brand">Hotel Risk MVP</div>
+          <div class="brand">Hotel Risk</div>
           <div style="display:flex; gap:.55rem; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
             <span class="role-pill">{html_escape(user.get('label', '—'))}</span>
             <span class="role-pill">{html_escape(status)}</span>
+            <span class="role-pill">model: {html_escape(str(model_status))}</span>
           </div>
         </div>
         """,
@@ -764,8 +840,7 @@ def render_login() -> None:
           <div class="hero-content">
             <h1 class="hero-title">Контроль риска<br/>отмен бронирований</h1>
             <div class="hero-subtitle">
-              Загрузите бронирования, получите список заявок к проверке и оцените ожидаемая потеря.<br/>
-              MVP для сдачи ДЗ №8: доменная модель, СУБД, REST API, UI, тесты, Docker и масштабируемые воркеры.
+              Загрузите бронирования, получите список заявок к проверке и оцените ожидаемые потери.<br/>
             </div>
           </div>
           <div class="hero-cards">
@@ -776,10 +851,6 @@ def render_login() -> None:
             <div class="feature-card">
               <div class="feature-head"><div class="feature-icon">🛡</div><div class="feature-title">Админу</div></div>
               <div class="feature-text">Статус модели, СУБД, batch-история, API и пользователи системы.</div>
-            </div>
-            <div class="feature-card">
-              <div class="feature-head"><div class="feature-icon">🚀</div><div class="feature-title">MVP</div></div>
-              <div class="feature-text">Локальный запуск, Docker Compose и масштабирование worker-контейнеров.</div>
             </div>
           </div>
         </div>
@@ -848,7 +919,7 @@ def render_manager() -> None:
     )
 
     st.markdown('<div class="action-panel">', unsafe_allow_html=True)
-    source_col, upload_col, sample_col, run_col = st.columns([.95, 1.25, 1.05, .85])
+    source_col, upload_col, currency_col, sample_col, run_col = st.columns([.85, 1.2, .9, 1.05, .85])
     with source_col:
         source = st.radio(
             "Источник данных",
@@ -858,6 +929,20 @@ def render_manager() -> None:
         )
     with upload_col:
         uploaded = st.file_uploader("CSV с бронированиями", type=["csv"], disabled=(source == "demo"))
+    with currency_col:
+        currency_labels = [f"{code} {symbol}" for code, symbol in CURRENCY_OPTIONS.items()]
+        current_code = str(st.session_state.get("currency_code", DEFAULT_CURRENCY_CODE))
+        if current_code not in CURRENCY_OPTIONS:
+            current_code = DEFAULT_CURRENCY_CODE
+            st.session_state.currency_code = current_code
+        current_label = f"{current_code} {CURRENCY_OPTIONS[current_code]}"
+        selected_currency = st.selectbox(
+            "Валюта сумм в CSV",
+            options=currency_labels,
+            index=currency_labels.index(current_label) if current_label in currency_labels else currency_labels.index(f"{DEFAULT_CURRENCY_CODE} {CURRENCY_OPTIONS[DEFAULT_CURRENCY_CODE]}"),
+            help="Выберите валюту, в которой указаны adr/стоимость в загруженном CSV. Сервис не конвертирует суммы, а только меняет знак отображения.",
+        )
+        st.session_state.currency_code = selected_currency.split()[0]
     with sample_col:
         st.caption("Примеры CSV")
         s1, s2 = st.columns(2)
@@ -883,29 +968,49 @@ def render_manager() -> None:
         return
 
     if df.empty:
+        clear_analysis_state()
+        st.session_state.last_analysis_signature = None
         soft_alert("Данные не выбраны", "Загрузите CSV или выберите демо-набор.", kind="warn", icon="!")
         return
 
-    st.caption(f"К анализу готово: {fmt_int(len(df))} бронирований.")
+    current_signature = build_input_signature(source, uploaded, df)
+    analysis_is_current = current_signature == st.session_state.get("last_analysis_signature")
+    has_previous_result = any(st.session_state.get(key) is not None for key in ["predictions", "summary", "validation", "batch"])
+
+    if not analysis_is_current:
+        if has_previous_result:
+            clear_analysis_state()
+            ui_log("manager_input_changed_results_cleared", rows=len(df), source=source)
+        if not run:
+            st.caption(f"К анализу готово: {fmt_int(len(df))} бронирований. Валюта отображения: {current_currency_label()}.")
+            soft_alert(
+                "Данные изменились",
+                "Предыдущий расчет скрыт, чтобы не показывать метрики от старого файла. Нажмите <b>«Запустить анализ»</b>, чтобы получить результат для текущего набора данных.",
+                kind="warn",
+                icon="!",
+            )
+            return
+
+    st.caption(f"К анализу готово: {fmt_int(len(df))} бронирований. Валюта отображения: {current_currency_label()}.")
 
     if health.get("status") != "ok":
         soft_alert("API недоступен", f"Запустите FastAPI локально. Проверяемый адрес: <b>{html_escape(API_URL)}</b>.", kind="bad", icon="×")
         return
 
     if run:
+        clear_analysis_state()
         try:
-            with st.spinner("Считаю риск отмены по всем строкам и сохраняю результат в СУБД..."):
-                st.session_state.validation = validate_df(df)
-                result = score_df(df)
+            with st.spinner("Считаю риск отмены и сохраняю результат в СУБД одним запуском..."):
+                result = upload_batch(df, name="manager_scoring", return_predictions=True)
+                st.session_state.batch = {k: v for k, v in result.items() if k not in {"summary", "predictions", "validation"}}
+                st.session_state.validation = result.get("validation") or validate_df(df)
                 st.session_state.summary = result.get("summary", {})
                 st.session_state.predictions = normalize_predictions(pd.DataFrame(result.get("predictions", [])))
-                try:
-                    st.session_state.batch = upload_batch(df, name="manager_scoring")
-                except Exception as exc:
-                    ui_log("batch_upload_failed", error=exc)
-                    st.session_state.batch = None
-            ui_log("manager_scoring_done", rows=len(df))
+                st.session_state.manager_view = "Список к проверке"
+                st.session_state.last_analysis_signature = current_signature
+            ui_log("manager_scoring_done", rows=len(df), batch_id=(st.session_state.batch or {}).get("id"))
         except ValueError as exc:
+            st.session_state.last_analysis_signature = None
             ui_log("csv_payload_failed", error=exc)
             soft_alert(
                 "CSV не прошел проверку",
@@ -915,6 +1020,7 @@ def render_manager() -> None:
             )
             return
         except requests.exceptions.RequestException as exc:
+            st.session_state.last_analysis_signature = None
             ui_log("scoring_api_failed", error=exc)
             soft_alert(
                 "CSV не прошел проверку",
@@ -924,6 +1030,7 @@ def render_manager() -> None:
             )
             return
         except Exception as exc:
+            st.session_state.last_analysis_signature = None
             ui_log("scoring_unexpected_failed", error=exc)
             soft_alert(
                 "CSV не прошел проверку",
@@ -937,7 +1044,22 @@ def render_manager() -> None:
     validation = st.session_state.validation
 
     if validation:
-        soft_alert("Анализ завершен", f"Обработано строк: <b>{fmt_int(validation.get('row_count', len(df)))}</b>.", icon="✓")
+        status = str(validation.get("quality_status", "green"))
+        kind = "ok" if status == "green" else ("warn" if status == "yellow" else "bad")
+        soft_alert(
+            "Анализ завершен",
+            f"Обработано строк: <b>{fmt_int(validation.get('row_count', len(df)))}</b>. "
+            f"Качество CSV: <b>{html_escape(status)}</b>. {html_escape(str(validation.get('quality_message', '')))}",
+            kind=kind,
+            icon="✓" if kind == "ok" else "!",
+        )
+    if health.get("warning") or str(health.get("model_status", "")).lower() == "fallback":
+        soft_alert(
+            "Включена fallback-модель",
+            "Сервис работает в демонстрационном rule-based режиме. Для защиты и пилота нужен артефакт <b>models/hw8_model.joblib</b>.",
+            kind="bad",
+            icon="!",
+        )
 
     if pred.empty:
         st.info("Нажмите «Запустить анализ», чтобы получить рабочий список.")
@@ -973,6 +1095,11 @@ def render_manager() -> None:
     loss_concentration = (review_expected_loss / expected_loss_all) if expected_loss_all > 0 else 0.0
     st.session_state["recommended_review_ids"] = recommended["booking_id"].astype(str).tolist() if "booking_id" in recommended.columns else []
 
+    st.caption(
+        f"Денежные показатели считаются в валюте исходного CSV: {current_currency_label()}. "
+        "Конвертация валюты не выполняется."
+    )
+
     render_metric_grid([
         ("Сумма всех броней", fmt_money(total_revenue), "если все выбранные брони состоятся"),
         ("Ожидаемые потери", fmt_money(expected_loss_all), "вероятность отмены × сумма брони"),
@@ -993,11 +1120,11 @@ def render_manager() -> None:
                 step=5,
             )
             cost_per_action = b.number_input(
-                "Стоимость проверки одной брони",
+                f"Стоимость проверки одной брони, {current_currency_label()}",
                 min_value=0.0,
-                max_value=5000.0,
-                value=float(st.session_state.cost_per_action),
-                step=50.0,
+                max_value=1_000_000.0,
+                value=float(st.session_state.get("cost_per_action", DEFAULT_COST_PER_ACTION)),
+                step=1.0,
             )
             if st.form_submit_button("Пересчитать", use_container_width=True):
                 st.session_state.success_rate = prevented_percent / 100.0
@@ -1008,7 +1135,7 @@ def render_manager() -> None:
         e2.metric("Стоимость проверки", fmt_money(cost))
         e3.metric("Оценка действий", fmt_money(net))
 
-    view_name = nav_radio("Раздел", ["Обзор", "Список к проверке", "Сегменты", "Карточка брони", "История"], "manager_view")
+    view_name = nav_radio("Раздел", ["Список к проверке", "Обзор", "Сегменты", "Карточка брони", "История"], "manager_view")
 
     if view_name == "Обзор":
         scatter = pred.copy().reset_index(drop=True)
@@ -1046,19 +1173,65 @@ def render_manager() -> None:
         else:
             view = view.head(0).copy()
         view = view.sort_values("business_priority_score", ascending=False) if "business_priority_score" in view else view
+
+        arrival_base_date = None
+        if "arrival_date" in pred:
+            full_arrival = pd.to_datetime(pred["arrival_date"], errors="coerce")
+            if full_arrival.notna().any():
+                arrival_base_date = full_arrival.min()
+
+        def filter_options(frame: pd.DataFrame, column: str) -> list[str]:
+            if column not in frame:
+                return []
+            return sorted(frame[column].dropna().astype(str).unique().tolist())
+
+        risk_order = ["Critical", "High", "Medium", "Low"]
+        risk_options = [x for x in risk_order if "risk_category" in view and x in set(view["risk_category"].dropna().astype(str))]
+        risk_options += [x for x in filter_options(view, "risk_category") if x not in risk_options]
+
+        with st.expander("Фильтры списка", expanded=True):
+            f1, f2, f3 = st.columns([1.15, 1, 1])
+            horizon = f1.selectbox("Заезд от ближайшей даты в файле", ["Все", "7 дней", "14 дней", "30 дней"], index=0)
+            hotel_filter = f2.multiselect("Отель", filter_options(view, "hotel"), placeholder="Все отели")
+            market_filter = f3.multiselect("Сегмент", filter_options(view, "market_segment"), placeholder="Все сегменты")
+            f4, f5, f6 = st.columns([1, 1, 1])
+            channel_filter = f4.multiselect("Канал", filter_options(view, "distribution_channel"), placeholder="Все каналы")
+            category_filter = f5.multiselect("Категория риска", risk_options, placeholder="Все категории")
+            min_loss = f6.number_input("Мин. ожидаемая потеря", min_value=0.0, value=0.0, step=100.0)
+            if arrival_base_date is not None:
+                st.caption(f"Горизонт заезда считается от ближайшей даты заезда в загруженном CSV: {arrival_base_date.date()}.")
+
+        if hotel_filter and "hotel" in view:
+            view = view[view["hotel"].astype(str).isin(hotel_filter)]
+        if market_filter and "market_segment" in view:
+            view = view[view["market_segment"].astype(str).isin(market_filter)]
+        if channel_filter and "distribution_channel" in view:
+            view = view[view["distribution_channel"].astype(str).isin(channel_filter)]
+        if category_filter and "risk_category" in view:
+            view = view[view["risk_category"].astype(str).isin(category_filter)]
+        if min_loss > 0 and "expected_loss" in view:
+            view = view[pd.to_numeric(view["expected_loss"], errors="coerce").fillna(0) >= float(min_loss)]
+        if horizon != "Все" and "arrival_date" in view and arrival_base_date is not None:
+            try:
+                horizon_days = int(horizon.split()[0])
+                arrival = pd.to_datetime(view["arrival_date"], errors="coerce")
+                view = view[(arrival.notna()) & (arrival >= arrival_base_date) & (arrival <= arrival_base_date + pd.Timedelta(days=horizon_days))]
+            except Exception:
+                pass
+
         if view.empty:
-            st.info("В этом файле нет броней, которые требуют ручной проверки по денежному риску.")
+            st.info("В этом файле нет броней, которые требуют ручной проверки по выбранным фильтрам.")
             return
-        table_cols = ["booking_id", "hotel", "market_segment", "total_nights", "booking_value", prob_col, "expected_loss", "risk_category", "recommended_action"]
+        table_cols = ["booking_id", "hotel", "market_segment", "distribution_channel", "total_nights", "booking_value", prob_col, "expected_loss", "risk_category", "recommended_action"]
         display = view[[c for c in table_cols if c in view.columns]].rename(columns={
-            "booking_id": "ID брони", "hotel": "Отель", "market_segment": "Сегмент", "total_nights": "Ночи",
+            "booking_id": "ID брони", "hotel": "Отель", "market_segment": "Сегмент", "distribution_channel": "Канал", "total_nights": "Ночи",
             "booking_value": "Сумма брони", prob_col: "Риск отмены", "risk_category": "Категория", "expected_loss": "Ожидаемая потеря",
             "recommended_action": "Что сделать",
         })
         column_config = {
-            "Сумма брони": st.column_config.NumberColumn("Сумма брони", format="%.0f ₽"),
+            "Сумма брони": st.column_config.NumberColumn("Сумма брони", format=money_column_format()),
             "Риск отмены": st.column_config.NumberColumn("Риск отмены", format="%.1%"),
-            "Ожидаемая потеря": st.column_config.NumberColumn("Ожидаемая потеря", format="%.0f ₽"),
+            "Ожидаемая потеря": st.column_config.NumberColumn("Ожидаемая потеря", format=money_column_format()),
             "Ночи": st.column_config.NumberColumn("Ночи", format="%d"),
         }
         st.dataframe(display, width="stretch", hide_index=True, height=500, column_config=column_config)
@@ -1119,12 +1292,12 @@ def render_manager() -> None:
             ("Сумма брони", fmt_money(row.get("booking_value", 0)), "цена за ночь × ночи"),
         ], compact=True)
         st.markdown(f"<div class='panel'><div class='panel-title'>Рекомендованное действие</div><div class='panel-text'>{html_escape(row.get('recommended_action', '—'))}</div></div>", unsafe_allow_html=True)
-        with st.expander("Почему эта бронь рискованная", expanded=True):
+        with st.expander("Бизнес-факторы риска", expanded=True):
             factors = row.get("top_factors", [])
             if isinstance(factors, str):
                 factors = [factors]
             if not factors:
-                st.write("Факторы риска не переданы моделью.")
+                st.write("Бизнес-факторы риска не переданы сервисом.")
             for factor in factors:
                 st.write(f"• {factor}")
 
@@ -1152,7 +1325,7 @@ def render_admin() -> None:
     st.markdown(
         """
         <div class="page-hero">
-          <h1 class="page-title">Админская панель MVP</h1>
+          <h1 class="page-title">Админская панель</h1>
           <div class="page-subtitle">Технический контур для проверки ДЗ: API, модель, СУБД, batch-история, схема данных, логи и worker-сценарий.</div>
         </div>
         """,

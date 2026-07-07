@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Annotated
@@ -16,14 +17,15 @@ from sqlalchemy.orm import Session
 from hotel_risk.analytics import build_insights, predictions_to_frame
 from hotel_risk.business import business_simulation, summarize_predictions
 from hotel_risk.config import get_settings
-from hotel_risk.db import BookingORM, PredictionORM, ScoringBatchORM, batch_to_dict, get_session, init_db
+from hotel_risk.db import BookingORM, PredictionORM, ScoringBatchORM, ScoringJobORM, batch_to_dict, get_session, init_db
 from hotel_risk.domain import DOMAIN_MODEL, LEAKAGE_COLUMNS, REQUIRED_COLUMNS, RISK_THRESHOLDS
 from hotel_risk.features import CATEGORICAL_FEATURES, COLUMN_ALIASES, DEFAULT_VALUES, FEATURE_COLUMNS, NUMERIC_FEATURES, prepare_features, validate_input
 from hotel_risk.logging_utils import setup_logging
 from hotel_risk.ml import load_model, predict_dataframe
-from hotel_risk.repository import create_scoring_batch, get_predictions, list_batches, persist_predictions
+from hotel_risk.repository import create_scoring_batch, create_scoring_job, get_predictions, list_batches, persist_predictions, scoring_job_to_dict, update_scoring_job
 from hotel_risk.schemas import (
     BatchResponse,
+    BatchUploadResponse,
     DomainModelResponse,
     HealthResponse,
     InsightResponse,
@@ -31,6 +33,7 @@ from hotel_risk.schemas import (
     OverviewResponse,
     SchemaResponse,
     ScoreRequest,
+    ScoringJobResponse,
     ScoreResponse,
     SimulationRequest,
     SimulationResponse,
@@ -40,14 +43,35 @@ from hotel_risk.schemas import (
 
 settings = get_settings()
 logger = setup_logging("hotel_risk.api")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    artifact = load_model(require_trained=settings.require_trained_model)
+    if artifact.get("is_fallback"):
+        logger.warning("startup.model_fallback path=%s warning=%s", artifact.get("model_path"), artifact.get("metrics", {}).get("warning"))
+    logger.info(
+        "startup.complete env=%s db=%s model_path=%s model=%s model_status=%s log_file=%s",
+        settings.environment,
+        settings.database_url.split(":")[0],
+        settings.model_path,
+        artifact.get("metrics", {}).get("model", "unknown"),
+        artifact.get("model_status", "unknown"),
+        settings.log_file,
+    )
+    yield
+
+
 app = FastAPI(
     title="Hotel Booking Cancellation Risk API",
-    version="0.9.0",
+    version="1.0.0",
     description="REST API для ML-сервиса прогнозирования отмен гостиничных бронирований.",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins if settings.cors_origins else ["http://localhost:8501", "http://127.0.0.1:8501"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,20 +115,15 @@ async def request_logging_middleware(request: Request, call_next):
     return response
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-    artifact = load_model()
-    logger.info("startup.complete env=%s db=%s model_path=%s model=%s log_file=%s", settings.environment, settings.database_url.split(":")[0], settings.model_path, artifact.get("metrics", {}).get("model", "unknown"), settings.log_file)
-
-
 def _prediction_records(predictions: pd.DataFrame, limit: int = 200000) -> list[dict]:
     cols = [
         "booking_id",
         "hotel",
+        "arrival_date",
         "market_segment",
         "distribution_channel",
         "deposit_type",
+        "customer_type",
         "adr",
         "total_nights",
         "booking_value",
@@ -121,6 +140,8 @@ def _prediction_records(predictions: pd.DataFrame, limit: int = 200000) -> list[
     ]
     out = predictions[cols].head(limit).copy()
     out["booking_id"] = out["booking_id"].astype(str)
+    if "arrival_date" in out.columns:
+        out["arrival_date"] = out["arrival_date"].astype(str)
     return out.to_dict(orient="records")
 
 
@@ -157,7 +178,22 @@ def _validation_response(df: pd.DataFrame, strict: bool = False) -> ValidationRe
         defaulted_columns=report.defaulted_columns or [],
         ignored_columns=report.ignored_columns or [],
         preview=preview_records,
+        schema_confidence=report.schema_confidence,
+        defaulted_ratio=report.defaulted_ratio,
+        quality_status=report.quality_status,
+        quality_message=report.quality_message,
     )
+
+
+def _validation_dict(df: pd.DataFrame, strict: bool = False) -> dict:
+    return _validation_response(df, strict=strict).model_dump()
+
+
+def _ensure_runtime_limits(df: pd.DataFrame, raw_bytes: int | None = None) -> None:
+    if raw_bytes is not None and raw_bytes > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"Файл слишком большой: {raw_bytes} bytes > {settings.max_upload_bytes} bytes.")
+    if len(df) > settings.sync_max_rows:
+        raise HTTPException(status_code=413, detail=f"Слишком много строк для sync endpoint: {len(df)} > {settings.sync_max_rows}. Используйте async worker.")
 
 
 def _canonical_sample() -> pd.DataFrame:
@@ -248,12 +284,15 @@ def _flexible_sample() -> pd.DataFrame:
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
     artifact = load_model()
-    logger.debug("health model=%s", artifact.get("metrics", {}).get("model", "unknown"))
+    logger.debug("health model=%s status=%s", artifact.get("metrics", {}).get("model", "unknown"), artifact.get("model_status"))
     return HealthResponse(
         status="ok",
         app=settings.app_name,
         model=str(artifact.get("metrics", {}).get("model", "unknown")),
         database=settings.database_url.split(":")[0],
+        model_status=str(artifact.get("model_status", "unknown")),
+        model_path=str(artifact.get("model_path", settings.model_path)),
+        warning=artifact.get("metrics", {}).get("warning"),
     )
 
 
@@ -262,13 +301,16 @@ def model_info() -> ModelInfoResponse:
     artifact = load_model()
     metrics = artifact.get("metrics", {})
     return ModelInfoResponse(
-        model_path=str(settings.model_path),
+        model_path=str(artifact.get("model_path", settings.model_path)),
         model_name=str(metrics.get("model", "unknown")),
         metrics=metrics,
         feature_count=len(artifact.get("feature_columns", FEATURE_COLUMNS)),
         numeric_features=list(artifact.get("numeric_features", NUMERIC_FEATURES)),
         categorical_features=list(artifact.get("categorical_features", CATEGORICAL_FEATURES)),
         risk_thresholds={k.value: v for k, v in RISK_THRESHOLDS.items()},
+        model_status=str(artifact.get("model_status", "unknown")),
+        is_fallback=bool(artifact.get("is_fallback", False)),
+        warning=metrics.get("warning"),
     )
 
 
@@ -344,6 +386,7 @@ async def validate_csv(file: UploadFile = File(...), strict: bool = Query(defaul
 def score_json(payload: ScoreRequest, limit: Annotated[int, Query(ge=1, le=1000000)] = 1000000, strict: bool = Query(default=False)) -> ScoreResponse:
     df = pd.DataFrame(payload.bookings)
     logger.info("score_json rows=%s cols=%s limit=%s strict=%s", len(df), df.shape[1], limit, strict)
+    _ensure_runtime_limits(df)
     try:
         predictions = predict_dataframe(df, strict=strict)
     except ValueError as exc:
@@ -363,8 +406,13 @@ async def score_csv(file: UploadFile = File(...), limit: Annotated[int, Query(ge
         raise HTTPException(status_code=400, detail="Файл пустой.")
     logger.info("score_csv file=%s bytes=%s limit=%s strict=%s", file.filename, len(raw), limit, strict)
     try:
+        if len(raw) > settings.max_upload_bytes:
+            raise HTTPException(status_code=413, detail=f"Файл слишком большой: {len(raw)} bytes > {settings.max_upload_bytes} bytes.")
         df = pd.read_csv(BytesIO(raw))
+        _ensure_runtime_limits(df, raw_bytes=len(raw))
         predictions = predict_dataframe(df, strict=strict)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("score_csv.failed file=%s", file.filename)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -386,25 +434,29 @@ def simulate(payload: SimulationRequest) -> SimulationResponse:
     )
 
 
-@app.post("/api/v1/batches/upload", response_model=BatchResponse, tags=["batches"])
+@app.post("/api/v1/batches/upload", response_model=BatchUploadResponse, tags=["batches"])
 async def upload_batch(
     db: Annotated[Session, Depends(get_session)],
     file: UploadFile = File(...),
     name: str | None = Query(default=None),
-) -> BatchResponse:
+    return_predictions: bool = Query(default=False),
+    prediction_limit: Annotated[int, Query(ge=1, le=1000000)] = 1000000,
+) -> BatchUploadResponse:
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Загрузите CSV-файл.")
     raw = await file.read()
     if len(raw) == 0:
         raise HTTPException(status_code=400, detail="Файл пустой.")
-    if len(raw) > 30 * 1024 * 1024:
+    if len(raw) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="Файл слишком большой для синхронного MVP-скоринга.")
-    logger.info("upload_batch.start file=%s bytes=%s name=%s", file.filename, len(raw), name)
+    logger.info("upload_batch.start file=%s bytes=%s name=%s return_predictions=%s", file.filename, len(raw), name, return_predictions)
     batch = create_scoring_batch(db, name or Path(file.filename).stem, source="csv", file_name=file.filename)
+    predictions: pd.DataFrame | None = None
+    validation_payload: dict | None = None
     try:
         df = pd.read_csv(BytesIO(raw))
-        if len(df) > settings.sync_max_rows:
-            raise ValueError(f"Слишком много строк для sync endpoint: {len(df)} > {settings.sync_max_rows}. Используйте async worker.")
+        _ensure_runtime_limits(df, raw_bytes=len(raw))
+        validation_payload = _validation_dict(df, strict=False)
         validation_report = validate_input(df, allow_defaults=True)
         predictions = predict_dataframe(df, strict=False)
         if validation_report.warnings:
@@ -412,13 +464,23 @@ async def upload_batch(
         persist_predictions(db, batch, predictions)
         db.commit()
         logger.info("upload_batch.done batch_id=%s rows=%s high_risk=%s expected_loss=%.2f", batch.id, batch.row_count, batch.high_risk_count, batch.total_expected_loss)
+    except HTTPException:
+        batch.status = "failed"
+        db.commit()
+        raise
     except Exception as exc:
         batch.status = "failed"
         batch.error_message = str(exc)
         db.commit()
         logger.exception("upload_batch.failed batch_id=%s error=%s", batch.id, exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return BatchResponse(**batch_to_dict(batch))
+
+    payload = batch_to_dict(batch)
+    if return_predictions and predictions is not None:
+        payload["summary"] = summarize_predictions(predictions)
+        payload["predictions"] = _prediction_records(predictions, prediction_limit)
+    payload["validation"] = validation_payload
+    return BatchUploadResponse(**payload)
 
 
 @app.get("/api/v1/batches", response_model=list[BatchResponse], tags=["batches"])
@@ -494,8 +556,12 @@ def overview(db: Annotated[Session, Depends(get_session)]) -> OverviewResponse:
     )
 
 
-@app.post("/api/v1/jobs/score-file", tags=["workers"])
-async def enqueue_file_job(file: UploadFile = File(...), name: str | None = Query(default=None)) -> dict:
+@app.post("/api/v1/jobs/score-file", response_model=ScoringJobResponse, tags=["workers"])
+async def enqueue_file_job(
+    db: Annotated[Session, Depends(get_session)],
+    file: UploadFile = File(...),
+    name: str | None = Query(default=None),
+) -> ScoringJobResponse:
     """Persist uploaded file and enqueue it for model workers. Requires Redis/RQ in Docker."""
     try:
         from redis import Redis
@@ -503,12 +569,38 @@ async def enqueue_file_job(file: UploadFile = File(...), name: str | None = Quer
         from hotel_risk.worker_jobs import score_file_job
     except Exception as exc:  # pragma: no cover - optional dependency
         raise HTTPException(status_code=503, detail="Redis/RQ dependencies are not installed in this runtime.") from exc
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Загрузите CSV-файл.")
     raw = await file.read()
+    if len(raw) == 0:
+        raise HTTPException(status_code=400, detail="Файл пустой.")
+    if len(raw) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"Файл слишком большой: {len(raw)} bytes > {settings.max_upload_bytes} bytes.")
     logger.info("enqueue_file_job.start file=%s bytes=%s name=%s", file.filename, len(raw), name)
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     path = settings.upload_dir / f"{int(pd.Timestamp.utcnow().timestamp())}_{file.filename}"
     path.write_bytes(raw)
-    queue = Queue("hotel-risk-scoring", connection=Redis.from_url(settings.redis_url))
-    job = queue.enqueue(score_file_job, str(path), name or Path(file.filename or "batch").stem, job_timeout="30m")
-    logger.info("enqueue_file_job.done job_id=%s file_path=%s", job.id, path)
-    return {"status": "queued", "queue": "hotel-risk-scoring", "job_id": job.id, "file_path": str(path)}
+
+    app_job = create_scoring_job(db, status="created")
+    db.commit()
+    try:
+        queue = Queue("hotel-risk-scoring", connection=Redis.from_url(settings.redis_url))
+        rq_job = queue.enqueue(score_file_job, str(path), name or Path(file.filename or "batch").stem, app_job.id, job_timeout="30m")
+        update_scoring_job(db, app_job.id, status="queued", queue_job_id=rq_job.id)
+        db.commit()
+        db.refresh(app_job)
+        logger.info("enqueue_file_job.done scoring_job_id=%s rq_job_id=%s file_path=%s", app_job.id, rq_job.id, path)
+        return ScoringJobResponse(**scoring_job_to_dict(app_job))
+    except Exception as exc:
+        update_scoring_job(db, app_job.id, status="failed")
+        db.commit()
+        logger.exception("enqueue_file_job.failed scoring_job_id=%s", app_job.id)
+        raise HTTPException(status_code=503, detail=f"Worker queue is unavailable: {exc}") from exc
+
+
+@app.get("/api/v1/jobs/{job_id}", response_model=ScoringJobResponse, tags=["workers"])
+def job_detail(job_id: int, db: Annotated[Session, Depends(get_session)]) -> ScoringJobResponse:
+    job = db.get(ScoringJobORM, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return ScoringJobResponse(**scoring_job_to_dict(job))

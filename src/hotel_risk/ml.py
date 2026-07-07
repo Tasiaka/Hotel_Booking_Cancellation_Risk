@@ -203,20 +203,89 @@ def topk_metrics(y_true: pd.Series | np.ndarray, score: np.ndarray, k: float = 0
     return {f"precision@{int(k*100)}": precision, f"recall@{int(k*100)}": recall, f"lift@{int(k*100)}": lift}
 
 
+def _derive_booking_creation_date(df: pd.DataFrame) -> pd.Series:
+    """Reconstruct booking creation date for the canonical HW4 split.
+
+    The production prediction moment is booking creation time: after a booking
+    appears in the hotel system, before cancellation/check-in/final status.
+    Therefore offline validation must train on earlier booking-creation cohorts
+    and test on later cohorts. Arrival-date ordering is only a last-resort
+    fallback for malformed demo data and is marked explicitly in metrics.
+    """
+    if "booking_creation_date" in df.columns:
+        return pd.to_datetime(df["booking_creation_date"], errors="coerce")
+
+    if "arrival_date" in df.columns and "lead_time" in df.columns:
+        arrival = pd.to_datetime(df["arrival_date"], errors="coerce")
+        lead_time = pd.to_numeric(df["lead_time"], errors="coerce")
+        return arrival - pd.to_timedelta(lead_time, unit="D")
+
+    required = {"arrival_date_year", "arrival_date_month", "arrival_date_day_of_month", "lead_time"}
+    if required.issubset(df.columns):
+        month_map = {
+            "January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
+            "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12,
+        }
+        month_raw = df["arrival_date_month"]
+        month = month_raw.map(month_map) if month_raw.dtype == object else pd.to_numeric(month_raw, errors="coerce")
+        arrival = pd.to_datetime(
+            dict(
+                year=pd.to_numeric(df["arrival_date_year"], errors="coerce"),
+                month=month,
+                day=pd.to_numeric(df["arrival_date_day_of_month"], errors="coerce"),
+            ),
+            errors="coerce",
+        )
+        lead_time = pd.to_numeric(df["lead_time"], errors="coerce")
+        return arrival - pd.to_timedelta(lead_time, unit="D")
+
+    return pd.Series(pd.NaT, index=df.index)
+
+
+def _assign_hw4_booking_creation_split(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Assign the single final split standard from HW4.
+
+    train: booking_creation_date <= 2016-10-31
+    valid: 2016-11-01..2017-03-31
+    test:  booking_creation_date > 2017-03-31
+    """
+    out = df.copy()
+    created = _derive_booking_creation_date(out)
+    out["booking_creation_date"] = created
+    if created.notna().all():
+        out["split"] = np.select(
+            [created <= pd.Timestamp("2016-10-31"), created <= pd.Timestamp("2017-03-31")],
+            ["train", "valid"],
+            default="test",
+        )
+        return out, "booking_creation_date_hw4"
+
+    # Defensive fallback for non-canonical toy data only. The metric artifact will
+    # expose this so it cannot be confused with the final HW4 standard.
+    out = out.sort_values(["arrival_date_year", "arrival_date_week_number", "arrival_date_day_of_month"], kind="stable")
+    cut1 = int(len(out) * 0.70)
+    cut2 = int(len(out) * 0.85)
+    out["split"] = "train"
+    out.loc[out.index[cut1:cut2], "split"] = "valid"
+    out.loc[out.index[cut2:], "split"] = "test"
+    return out, "arrival_date_fallback_non_canonical"
+
+
 def train_model(data_path: str | Path, model_path: str | Path | None = None, metrics_path: str | Path | None = None, max_rows: int | None = None) -> dict[str, Any]:
     settings = get_settings()
     model_path = Path(model_path or settings.model_path)
     metrics_path = Path(metrics_path or settings.metrics_path)
     df = pd.read_csv(data_path)
+    if "split" in df.columns and "booking_creation_date" in df.columns:
+        split_strategy = "existing_split_column_hw4_booking_creation_date"
+    elif "split" in df.columns:
+        split_strategy = "existing_split_column"
+    else:
+        split_strategy = "booking_creation_date_hw4"
     if max_rows is not None and len(df) > max_rows:
         df = df.sample(max_rows, random_state=settings.random_state).sort_index()
     if "split" not in df.columns:
-        df = df.sort_values(["arrival_date_year", "arrival_date_week_number", "arrival_date_day_of_month"], kind="stable")
-        cut1 = int(len(df) * 0.70)
-        cut2 = int(len(df) * 0.85)
-        df["split"] = "train"
-        df.loc[df.index[cut1:cut2], "split"] = "valid"
-        df.loc[df.index[cut2:], "split"] = "test"
+        df, split_strategy = _assign_hw4_booking_creation_split(df)
 
     train = df[df["split"] == "train"].copy()
     valid = df[df["split"] == "valid"].copy()
@@ -274,6 +343,8 @@ def train_model(data_path: str | Path, model_path: str | Path | None = None, met
     metrics: dict[str, Any] = {
         "model": best_name + " + Platt calibration",
         "model_selection": "best candidate by validation ROC-AUC/PR-AUC/Lift@20",
+        "split_strategy": split_strategy,
+        "split_standard": "HW4 booking_creation_date: train <= 2016-10-31; valid 2016-11-01..2017-03-31; test > 2017-03-31",
         "calibration_method": "Platt sigmoid on validation split" if calibrator is not None else "not fitted; raw score fallback",
         "expected_loss_probability": "cancellation_probability",
         "rows_train": int(len(train)),
@@ -304,11 +375,35 @@ def train_model(data_path: str | Path, model_path: str | Path | None = None, met
     return metrics
 
 
-def load_model(model_path: str | Path | None = None) -> dict[str, Any]:
-    path = Path(model_path or get_settings().model_path)
+def load_model(model_path: str | Path | None = None, require_trained: bool | None = None) -> dict[str, Any]:
+    settings = get_settings()
+    path = Path(model_path or settings.model_path)
     if path.exists():
-        return joblib.load(path)
-    return {"pipeline": RuleFallbackModel(), "metrics": {"model": "rule fallback; train with python -m hotel_risk.train"}}
+        artifact = joblib.load(path)
+        artifact.setdefault("metrics", {})
+        artifact["model_status"] = "trained"
+        artifact["model_path"] = str(path)
+        artifact["is_fallback"] = False
+        return artifact
+
+    must_have_model = settings.require_trained_model if require_trained is None else bool(require_trained)
+    if must_have_model or not settings.allow_fallback_model:
+        raise FileNotFoundError(
+            f"Trained model artifact not found at {path}. "
+            "Run: python -m hotel_risk.train --data data/processed/main_modeling_dataset.csv "
+            f"--model {path}"
+        )
+
+    return {
+        "pipeline": RuleFallbackModel(),
+        "metrics": {
+            "model": "rule fallback; train with python -m hotel_risk.train",
+            "warning": "Demo fallback is active because trained model artifact was not found.",
+        },
+        "model_status": "fallback",
+        "model_path": str(path),
+        "is_fallback": True,
+    }
 
 
 def predict_dataframe(df: pd.DataFrame, model_artifact: dict[str, Any] | None = None, strict: bool = False) -> pd.DataFrame:

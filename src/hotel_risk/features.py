@@ -190,6 +190,10 @@ class ValidationReport:
     mapped_columns: dict[str, str] | None = None
     defaulted_columns: list[str] | None = None
     ignored_columns: list[str] | None = None
+    schema_confidence: float = 1.0
+    defaulted_ratio: float = 0.0
+    quality_status: str = "green"
+    quality_message: str = "Данные подходят для скоринга."
 
     @property
     def ok(self) -> bool:
@@ -301,6 +305,24 @@ def validate_input(df: pd.DataFrame, allow_defaults: bool = False) -> Validation
         warnings.append("Часть обязательных признаков отсутствовала и была заполнена дефолтами: " + ", ".join(defaulted))
     if ignored:
         warnings.append("Лишние колонки не используются моделью: " + ", ".join(ignored[:20]) + ("..." if len(ignored) > 20 else ""))
+
+    required_count = max(1, len(REQUIRED_COLUMNS))
+    defaulted_ratio = min(1.0, len(defaulted) / required_count)
+    mapped_required = len([c for c in REQUIRED_COLUMNS if c in mapped or c in df.columns])
+    schema_confidence = max(0.0, min(1.0, 1.0 - defaulted_ratio))
+    if not allow_defaults and defaulted:
+        quality_status = "red"
+        quality_message = "Не хватает обязательных колонок; строгий режим запрещает скоринг."
+    elif defaulted_ratio == 0:
+        quality_status = "green"
+        quality_message = "Все обязательные признаки найдены. Результат можно использовать для демо-решения."
+    elif defaulted_ratio <= 0.20 and mapped_required >= required_count * 0.80:
+        quality_status = "yellow"
+        quality_message = "Часть признаков заполнена дефолтами. Скоринг допустим как best-effort, но качество ниже канонического CSV."
+    else:
+        quality_status = "red"
+        quality_message = "Слишком много признаков заполнено дефолтами. Результат годится только для технической демонстрации."
+
     return ValidationReport(
         row_count=int(len(df)),
         column_count=int(df.shape[1]),
@@ -310,6 +332,10 @@ def validate_input(df: pd.DataFrame, allow_defaults: bool = False) -> Validation
         mapped_columns=mapped,
         defaulted_columns=defaulted,
         ignored_columns=ignored,
+        schema_confidence=float(schema_confidence),
+        defaulted_ratio=float(defaulted_ratio),
+        quality_status=quality_status,
+        quality_message=quality_message,
     )
 
 
@@ -422,6 +448,10 @@ def prepare_features(df: pd.DataFrame, strict: bool = True) -> tuple[pd.DataFram
         mapped_columns=mapped,
         defaulted_columns=defaulted,
         ignored_columns=ignored,
+        schema_confidence=report.schema_confidence,
+        defaulted_ratio=report.defaulted_ratio,
+        quality_status=report.quality_status,
+        quality_message=report.quality_message,
     )
     return out, final_report
 
