@@ -61,7 +61,7 @@ pip install -r requirements-mvp.txt
 pip install -e .
 ```
 
-Обучение / переупаковка модели в бинарный артефакт:
+Обучение / переупаковка модели в бинарник:
 
 ```bash
 python -m hotel_risk.train \
@@ -225,17 +225,6 @@ pytest
 
 ```text
 59 passed
-```
-
-## Что приложить в GitHub
-
-В GitHub нужно загрузить весь проект и приложить ссылку на репозиторий. Для проверки удобно открыть:
-
-```text
-README.md
-README_HW8_SUBMISSION.md
-homework_08/packaging_mvp_report.md
-docs/HW8_SCREENSHOT_GUIDE.md
 ```
 
 
