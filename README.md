@@ -1,20 +1,56 @@
-# Hotel Booking Cancellation Risk — MVP для ДЗ №8
+# Hotel Booking Cancellation Risk — финальный MVP
 
-MVP-сервис для revenue-менеджера отеля: сервис загружает CSV с бронированиями, проверяет схему, рассчитывает риск отмены, показывает выручку под риском и сохраняет результаты скоринга в СУБД.
+ML-сервис для revenue-менеджера отеля. Сервис загружает CSV с бронированиями, проверяет качество схемы, считает вероятность отмены, переводит ее в ожидаемую денежную потерю, формирует список броней к ручной проверке и сохраняет результаты скоринга в СУБД.
 
-Проект подготовлен под домашнее задание №8 «Упаковка MVP».
+Короткий тезис для защиты:
+
+```text
+Сервис за 3 минуты превращает CSV бронирований в список заявок, где сконцентрирован денежный риск отмен.
+```
+
+Формула продуктовой ценности:
+
+```text
+risk_score = P(is_canceled = 1)
+booking_value = adr × total_nights
+expected_loss = cancellation_probability × booking_value × deposit_loss_factor
+business_priority_score = expected_loss
+```
+
+
+## Валюта денежных показателей
+
+Сервис не предполагает, что цены в CSV всегда заданы в рублях. В UI можно выбрать валюту отображения: **RUB ₽, EUR €, USD $, GBP £**. Конвертация не выполняется: `adr`, `booking_value`, `expected_loss` считаются в валюте исходного файла, а выбранная валюта используется только для отображения KPI и таблиц. Подробнее: `docs/CURRENCY_HANDLING.md`.
+
+## Что доработано перед финальной защитой
+
+| Зона | Что изменено |
+|---|---|
+| Модель | В архиве есть `models/hw8_model.joblib`; `/health` и `/api/v1/model-info` явно показывают `model_status=trained/fallback` |
+| Fallback | Fallback больше не скрыт: API возвращает предупреждение, UI показывает красный баннер. Для строгого режима можно задать `HOTEL_RISK_REQUIRE_TRAINED_MODEL=1` |
+| Метрики | Добавлен единый `docs/MODEL_CARD.md` с финальными HW8-метриками сервисной модели |
+| UI | После анализа сразу открывается «Список к проверке», а не аналитический scatter plot |
+| UI-фильтры | Добавлены фильтры по горизонту заезда, отелю, сегменту, каналу, категории риска и минимальной ожидаемой потере |
+| Валюта | UI поддерживает RUB ₽, EUR €, USD $, GBP £; конвертация не выполняется |
+| CSV quality | Валидация возвращает `quality_status`, `schema_confidence`, `defaulted_ratio`, `quality_message`; UI подсвечивает качество входного файла |
+| Объяснения | Локальные причины переименованы в «Бизнес-факторы риска», чтобы не выдавать эвристики за SHAP |
+| API | `POST /api/v1/batches/upload?return_predictions=true` теперь одним вызовом сохраняет batch и возвращает predictions для UI |
+| Workers | `scoring_jobs` теперь реально используется: job получает статусы `created/queued/scoring/completed/failed`; добавлен `GET /api/v1/jobs/{job_id}` |
+| Ограничения | Для sync endpoints добавлены лимиты на размер файла и число строк |
+| Технический долг | Убран deprecated FastAPI `on_event`; Pydantic `Config` заменен на `ConfigDict`; CORS ограничен локальными UI origin по умолчанию |
+| Упаковка | Добавлены отсутствовавшие файлы сдачи: `README_HW8_SUBMISSION.md`, `docs/HW8_SCREENSHOT_GUIDE.md` |
 
 ## Что закрыто по критериям задания
 
 | Требование | Реализация в проекте |
 |---|---|
-| Доменная модель сервиса | `src/hotel_risk/domain.py`, `src/hotel_risk/db.py`, отчет `homework_08/packaging_mvp_report.md` |
-| Хранение данных за счет СУБД | SQLite локально, PostgreSQL в Docker Compose; таблицы batch, bookings, predictions, jobs, audit logs |
-| REST интерфейс | FastAPI: `src/hotel_risk/api/main.py`, Swagger: `http://127.0.0.1:8000/docs` |
-| Пользовательский интерфейс | Streamlit: `ui/streamlit_app.py` |
-| Тесты критических частей | `tests/`, ожидаемый результат: `59 passed` |
-| Docker контейнер | `Dockerfile.api`, `Dockerfile.ui`, `Dockerfile.worker`, `docker-compose.yml` |
-| Масштабирование воркеров | Redis + worker; команда `docker compose up --scale worker=3` |
+| Доменная модель сервиса | `src/hotel_risk/domain.py`, `src/hotel_risk/db.py` |
+| Хранение данных за счет СУБД | SQLite локально, PostgreSQL в Docker Compose; таблицы `scoring_batches`, `bookings`, `predictions`, `scoring_jobs`, `audit_logs` |
+| REST API | FastAPI: `src/hotel_risk/api/main.py`; Swagger: `http://127.0.0.1:8000/docs` |
+| UI | Streamlit: `ui/streamlit_app.py` |
+| Тесты | `tests/`, текущий результат: `60 passed` |
+| Docker | `Dockerfile.api`, `Dockerfile.ui`, `Dockerfile.worker`, `docker-compose.yml` |
+| Масштабирование воркеров | Redis + RQ worker; команда `docker compose up --scale worker=3` |
 
 ## Структура проекта
 
@@ -36,6 +72,7 @@ MVP-сервис для revenue-менеджера отеля: сервис за
 │   ├── hotel_risk/
 │   │   ├── api/main.py
 │   │   ├── business.py
+│   │   ├── config.py
 │   │   ├── db.py
 │   │   ├── domain.py
 │   │   ├── features.py
@@ -43,12 +80,17 @@ MVP-сервис для revenue-менеджера отеля: сервис за
 │   │   ├── repository.py
 │   │   ├── schemas.py
 │   │   ├── train.py
-│   │   └── worker.py
+│   │   ├── worker.py
+│   │   └── worker_jobs.py
 │   └── prepare_dataset.py
 ├── ui/
 │   └── streamlit_app.py
-├── tests/
-└── docs/
+├── docs/
+│   ├── MODEL_CARD.md
+│   ├── DEFENSE_GUIDE.md
+│   ├── BUSINESS_ECONOMICS.md
+│   └── UI_ROLES.md
+└── tests/
 ```
 
 ## Локальный запуск без Docker
@@ -61,7 +103,13 @@ pip install -r requirements-mvp.txt
 pip install -e .
 ```
 
-Обучение / переупаковка модели в бинарник:
+Проверить, что модельный артефакт есть:
+
+```bash
+ls -lh models/hw8_model.joblib
+```
+
+Переобучить / переупаковать модель:
 
 ```bash
 python -m hotel_risk.train \
@@ -84,44 +132,6 @@ export HOTEL_RISK_API_URL=http://127.0.0.1:8000
 streamlit run ui/streamlit_app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Открыть UI:
-
-```text
-http://localhost:8501
-```
-
-Открыть Swagger:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-
-## Логин и регистрация UI
-
-Streamlit-интерфейс разделен на роли:
-
-```text
-user / user       рабочая панель менеджера
-admin / admin     техническая админская часть
-```
-
-На странице входа есть регистрация нового пользователя. Зарегистрированный аккаунт автоматически получает роль менеджера. Локальное хранилище пользователей:
-
-```text
-storage/users.json
-```
-
-Для учебного MVP пароли зарегистрированных пользователей сохраняются не в открытом виде, а как PBKDF2-SHA256 hash с солью. Администраторский доступ не выдается через саморегистрацию; роль admin остается только у `admin/admin`.
-
-В роли менеджера интерфейс специально упрощен: одна основная кнопка «Запустить анализ», итоговые KPI, список броней к проверке, карточка брони и история. Технические детали, REST endpoints, схема API и логи вынесены в роль администратора.
-
-## Запуск через Docker Compose
-
-```bash
-docker compose up --build
-```
-
 Адреса:
 
 ```text
@@ -130,18 +140,25 @@ API:     http://localhost:8000
 Swagger: http://localhost:8000/docs
 ```
 
-Масштабирование воркеров с моделью:
+## Демо-авторизация
+
+| Роль | Логин | Пароль | Интерфейс |
+|---|---|---|---|
+| Менеджер | `user` | `user` | Загрузка данных, запуск анализа, KPI, список к проверке, карточка брони, история |
+| Администратор | `admin` | `admin` | Статус API, модель, СУБД, схема API, пользователи, логи |
+
+На странице входа есть регистрация нового пользователя. Зарегистрированный аккаунт автоматически получает роль менеджера. Для учебного MVP пароли зарегистрированных пользователей сохраняются как PBKDF2-SHA256 hash с солью в `storage/users.json`. Администраторский доступ через регистрацию не выдается.
+
+## Запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Масштабирование воркеров:
 
 ```bash
 docker compose up --build --scale worker=3
-```
-
-## СУБД
-
-Локально используется SQLite:
-
-```text
-storage/hotel_risk.db
 ```
 
 В Docker Compose используется PostgreSQL:
@@ -150,21 +167,10 @@ storage/hotel_risk.db
 postgresql+psycopg2://hotel_risk:hotel_risk@postgres:5432/hotel_risk
 ```
 
-Сервис сохраняет:
+Локально по умолчанию используется SQLite:
 
 ```text
-hotel_properties      объект размещения
-scoring_batches       пакет скоринга
-bookings              нормализованные бронирования
-predictions           прогнозы модели
-scoring_jobs          задания воркеров
-audit_logs            журнал событий
-```
-
-Главная ручка для сохранения результатов в СУБД:
-
-```text
-POST /api/v1/batches/upload
+storage/hotel_risk.db
 ```
 
 ## REST API
@@ -176,91 +182,75 @@ GET  /health
 GET  /api/v1/domain-model
 GET  /api/v1/model-info
 GET  /api/v1/schema
+GET  /api/v1/sample-csv?format=canonical
+GET  /api/v1/sample-csv?format=flexible
 POST /api/v1/validate
 POST /api/v1/validate-csv
 POST /api/v1/score
 POST /api/v1/score-csv
-POST /api/v1/batches/upload
+POST /api/v1/batches/upload?return_predictions=true
 GET  /api/v1/batches
 GET  /api/v1/batches/{batch_id}
 GET  /api/v1/batches/{batch_id}/predictions
+GET  /api/v1/batches/{batch_id}/insights
 GET  /api/v1/batches/{batch_id}/export
+GET  /api/v1/analytics/overview
 POST /api/v1/jobs/score-file
+GET  /api/v1/jobs/{job_id}
 ```
 
 ## CSV формат
 
 Сервис поддерживает два режима:
 
-1. Канонический CSV с колонками исходного датасета.
-2. Flexible CSV: сервис пытается распознать похожие названия колонок и заполнить недостающие поля безопасными значениями по умолчанию.
+1. Канонический CSV с колонками исходного Hotel Booking Demand Dataset.
+2. Flexible CSV: сервис пытается распознать похожие названия колонок и заполнить недостающие поля безопасными дефолтами.
 
-Примеры находятся здесь:
+Примеры:
 
 ```text
 data/examples/canonical_upload_example.csv
 data/examples/flexible_upload_example.csv
 ```
 
-## Метрики MVP-модели
+Если слишком много колонок заполнено дефолтами, API вернет `quality_status=red`, а UI покажет предупреждение. Такой результат годится только для технической демонстрации, не для бизнес-решения.
 
-Финальная сервисная модель: LightGBM FE + train-only target/frequency encoding + Platt calibration.
+## Финальные метрики сервисной модели
+
+Финальная модель в MVP: `LightGBM FE TE conservative + Platt calibration`.
 
 ```text
-ROC-AUC      = 0.8595
-PR-AUC       = 0.6791
-Brier        = 0.1409
-Precision@20 = 0.6892
-Recall@20    = 0.4874
-Lift@20      = 2.4375
+ROC-AUC       = 0.8595
+PR-AUC        = 0.6791
+Brier         = 0.1409
+Precision@20  = 0.6892
+Recall@20     = 0.4874
+Lift@20       = 2.4375
 ```
 
-Top-20% бронирований по риску содержит отмены примерно в 2.44 раза чаще, чем случайный список такого же размера.
+Главная метрика для питча — `Lift@20`: верхние 20% броней по риску содержат отмены примерно в 2.44 раза чаще, чем случайный список такого же размера. Подробности: `docs/MODEL_CARD.md`.
 
 ## Тесты
 
 ```bash
-pytest
+pytest -q
 ```
+
+Текущий результат после доработок:
 
 ```text
-59 passed
+60 passed
 ```
 
+## Переменные окружения
 
-## Демо-авторизация и роли
-
-В Streamlit UI добавлен login-screen с разделением ролей:
-
-| Роль | Логин | Пароль | Интерфейс |
-|---|---|---|---|
-| Пользователь | `user` | `user` | Упрощенная рабочая панель менеджера: данные, анализ, KPI, список к проверке, карточка брони, история |
-| Администратор | `admin` | `admin` | Админская часть: статус API, модель, СУБД/batch, схема API, логи, плюс обычный пользовательский сценарий |
-
-Авторизация демонстрационная и нужна для учебного MVP. Для реального продукта ее нужно заменить на серверную авторизацию.
-
-## Обновленный UI/UX
-
-Интерфейс упрощен: убрана перегруженная боковая панель, оставлена одна основная кнопка **«Запустить анализ»**, технические детали перенесены в админскую роль, а подробные пояснения открываются в отдельных раскрывающихся блоках.
-
-Документ по ролям и UX:
-
-```text
-docs/UI_ROLES.md
-```
-
-## UI/UX и роли
-
-В Streamlit добавлена демонстрационная авторизация с двумя ролями:
-
-```text
-user / user   — рабочий интерфейс менеджера
-admin / admin — административная часть
-```
-
-Страница входа сделана адаптивной: верхний hero-блок масштабируется относительно окна, а форма входа находится в компактной центральной карточке. Менеджерская панель упрощена: вместо большого числа кнопок оставлена одна основная кнопка **«Запустить анализ»**, а подробности спрятаны в раскрывающиеся блоки. Технические детали доступны только роли `admin`.
-
-
-## Бизнес-финансы в интерфейсе
-
-Менеджерский интерфейс больше не требует вручную выбирать долю бронирований к проверке. Сервис автоматически подбирает список с максимальным ожидаемым эффектом: ожидаемо условно сохранено − стоимость проверки. Подробная логика описана в `docs/BUSINESS_ECONOMICS.md`.
+| Переменная | Значение по умолчанию | Назначение |
+|---|---|---|
+| `HOTEL_RISK_API_URL` | `http://127.0.0.1:8000` | URL API для Streamlit |
+| `HOTEL_RISK_DATABASE_URL` | `sqlite:///./storage/hotel_risk.db` | Подключение к СУБД |
+| `HOTEL_RISK_MODEL_PATH` | `models/hw8_model.joblib` | Путь к модели |
+| `HOTEL_RISK_REQUIRE_TRAINED_MODEL` | `0` | Если `1`, API не стартует без trained artifact |
+| `HOTEL_RISK_ALLOW_FALLBACK_MODEL` | `1` | Разрешает demo rule-based fallback |
+| `HOTEL_RISK_SYNC_MAX_ROWS` | `1000000` | Лимит строк для sync scoring |
+| `HOTEL_RISK_MAX_UPLOAD_BYTES` | `31457280` | Лимит размера CSV |
+| `HOTEL_RISK_CORS_ORIGINS` | `http://localhost:8501,http://127.0.0.1:8501` | Разрешенные UI origins |
